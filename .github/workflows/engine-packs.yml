@@ -166,9 +166,93 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  python-packs:
+    if: github.event_name == 'workflow_dispatch' || inputs.run_packs
+    strategy:
+      fail-fast: false
+      matrix:
+        pack: [live-streams, galleries]
+        target:
+          - { id: windows-x64, runner: windows-2025, packager: target/release/fmd-packager.exe }
+          - { id: windows-arm64, runner: windows-11-arm, packager: target/release/fmd-packager.exe }
+          - { id: macos-x64, runner: macos-15-intel, packager: target/release/fmd-packager }
+          - { id: macos-arm64, runner: macos-15, packager: target/release/fmd-packager }
+          - { id: linux-x64, runner: ubuntu-24.04, packager: target/release/fmd-packager }
+          - { id: linux-arm64, runner: ubuntu-24.04-arm, packager: target/release/fmd-packager }
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: packs/requirements/${{ matrix.pack }}.lock
+      - name: Install hash-locked bundle dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          --only-binary=:all:
+          -r packs/requirements/${{ matrix.pack }}.lock
+      - name: Verify installed dependency graph
+        run: python -m pip check
+      - name: Build packager
+        run: cargo build --locked --release -p fmd-packager
+      - name: Build Streamlink one-folder bundle
+        if: matrix.pack == 'live-streams'
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --clean --noconfirm --onedir
+          --name streamlink
+          --distpath "${{ runner.temp }}/python-dist"
+          --workpath "${{ runner.temp }}/python-work"
+          --specpath "${{ runner.temp }}/python-spec"
+          --collect-all streamlink
+          --collect-all streamlink_cli
+          --copy-metadata streamlink
+          scripts/packs/python-entry/streamlink_entry.py
+      - name: Build gallery-dl one-folder bundle
+        if: matrix.pack == 'galleries'
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --clean --noconfirm --onedir
+          --name gallery_dl
+          --distpath "${{ runner.temp }}/python-dist"
+          --workpath "${{ runner.temp }}/python-work"
+          --specpath "${{ runner.temp }}/python-spec"
+          --collect-all gallery_dl
+          --copy-metadata gallery-dl
+          scripts/packs/python-entry/gallery_entry.py
+      - name: Collect locked dependency licenses
+        shell: pwsh
+        run: >-
+          python scripts/packs/collect-python-licenses.py
+          --lock "packs/requirements/${{ matrix.pack }}.lock"
+          --out "${{ runner.temp }}/python-licenses"
+      - name: Assemble and smoke-test pack
+        shell: pwsh
+        run: >-
+          node scripts/packs/assemble-python-engine-pack.mjs
+          --pack "${{ matrix.pack }}"
+          --target "${{ matrix.target.id }}"
+          --bundle "${{ runner.temp }}/python-dist/${{ matrix.pack == 'live-streams' && 'streamlink' || 'gallery_dl' }}"
+          --licenses "${{ runner.temp }}/python-licenses"
+          --lock "packs/requirements/${{ matrix.pack }}.lock"
+          --work "${{ runner.temp }}/${{ matrix.pack }}-assembly"
+          --out "${{ runner.temp }}/${{ matrix.pack }}-${{ matrix.target.id }}.zip"
+          --packager "${{ matrix.target.packager }}"
+      - name: Upload unsigned CI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-${{ matrix.pack }}-${{ matrix.target.id }}
+          path: ${{ runner.temp }}/${{ matrix.pack }}-${{ matrix.target.id }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
   engine-packs-required:
     if: always()
-    needs: [ffmpeg-source, ffmpeg-unix, video-core]
+    needs: [ffmpeg-source, ffmpeg-unix, video-core, python-packs]
     runs-on: ubuntu-24.04
     steps:
       - name: Require successful engine-pack checks when selected
@@ -177,13 +261,14 @@ jobs:
           FFMPEG_SOURCE: ${{ needs.ffmpeg-source.result }}
           FFMPEG_UNIX: ${{ needs.ffmpeg-unix.result }}
           VIDEO_CORE: ${{ needs.video-core.result }}
+          PYTHON_PACKS: ${{ needs.python-packs.result }}
         run: |
           if [[ "$SHOULD_RUN" != "true" ]]; then
             echo "Engine-pack checks are not required for these changes."
             exit 0
           fi
 
-          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$VIDEO_CORE"; do
+          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$VIDEO_CORE" "$PYTHON_PACKS"; do
             if [[ "$result" != "success" ]]; then
               echo "A required engine-pack check finished with: $result"
               exit 1

@@ -194,7 +194,12 @@ impl BuiltinCliAdapter {
                 }
                 command.arg("--").arg(source)
             }
-            AdapterId::StreamlinkV1 => command.arg("--json").arg("--").arg(source),
+            AdapterId::StreamlinkV1 => command
+                .arg("--no-config")
+                .arg("--no-plugin-sideloading")
+                .arg("--json")
+                .arg("--")
+                .arg(source),
             AdapterId::GalleryDlV1 => command
                 .arg("--config-ignore")
                 .arg("--dump-json")
@@ -250,7 +255,11 @@ impl BuiltinCliAdapter {
                 command.arg("--").arg(source)
             }
             AdapterId::StreamlinkV1 => {
-                let mut command = command.arg("--output").arg(&output);
+                let mut command = command
+                    .arg("--no-config")
+                    .arg("--no-plugin-sideloading")
+                    .arg("--output")
+                    .arg(&output);
                 if let Some(ffmpeg) = context.installation.companion("ffmpeg")? {
                     command = command.arg("--ffmpeg-ffmpeg").arg(ffmpeg.as_os_str());
                 }
