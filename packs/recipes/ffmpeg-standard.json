@@ -3,7 +3,7 @@
   "version": "9.0.0",
   "component": "ffmpeg",
   "configure": [
-    "--disable-everything", "--disable-debug", "--disable-doc", "--disable-gpl", "--disable-nonfree",
+    "--disable-everything", "--disable-autodetect", "--disable-debug", "--disable-doc", "--disable-gpl", "--disable-nonfree",
     "--disable-programs", "--enable-ffmpeg", "--enable-ffprobe",
     "--enable-protocol=file,pipe,http,https,tcp,tls,udp,crypto,concat,data",
     "--enable-demuxer=aac,concat,dash,flac,hls,image2,matroska,mov,mp3,mpegts,ogg,srt,wav,webvtt",

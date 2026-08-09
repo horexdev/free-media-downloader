@@ -70,12 +70,19 @@ if [[ "$target" == linux-* ]]; then
   )
   extra_configuration+=(
     --enable-openssl
+    --enable-pthreads
+    --enable-zlib
     "--extra-cflags=-I$work_dir/openssl-prefix/include"
     "--extra-ldflags=-L$work_dir/openssl-prefix/lib64 -L$work_dir/openssl-prefix/lib"
     --extra-libs=-ldl
   )
 else
-  extra_configuration+=(--disable-openssl)
+  extra_configuration+=(
+    --disable-openssl
+    --enable-pthreads
+    --enable-securetransport
+    --enable-zlib
+  )
 fi
 
 recipe_configuration=()
@@ -101,6 +108,9 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
   else
     grep -Eq '^#define CONFIG_SECURETRANSPORT 1$' config.h
   fi
+  grep -Eq '^#define HAVE_PTHREADS 1$' config.h
+  grep -Eq '^#define CONFIG_ZLIB 1$' config.h
+  ! grep -Eq '^#define CONFIG_(XLIB|LIBXCB|LIBXCB_SHM|LIBXCB_XFIXES|LIBXCB_SHAPE) 1$' config.h
   ! grep -Eq '^#define CONFIG_(GPL|NONFREE) 1$' config.h
   make -j"$jobs"
   make install
