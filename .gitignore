@@ -1,0 +1,17 @@
+/target/
+/node_modules/
+/dist/
+/src/lib/paraglide/
+/.env
+/.env.*
+/.vite/
+/.svelte-kit/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.part
+/data/
+/engines/
+/artifacts/
+/src-tauri/gen/

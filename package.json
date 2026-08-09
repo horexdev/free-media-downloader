@@ -1,0 +1,29 @@
+{
+  "name": "free-media-downloader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.16.0",
+  "scripts": {
+    "dev": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && vite",
+    "build": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && tsc --noEmit && vite build",
+    "check": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && tsc --noEmit",
+    "i18n:compile": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.1"
+  },
+  "devDependencies": {
+    "@inlang/paraglide-js": "2.23.2",
+    "@inlang/plugin-message-format": "4.4.1",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "^24.13.3",
+    "esbuild": "0.27.3",
+    "svelte": "5.56.8",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  }
+}

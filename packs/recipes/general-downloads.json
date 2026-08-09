@@ -1,0 +1,10 @@
+{
+  "packId": "general-downloads",
+  "version": "1.0.0",
+  "components": ["aria2", "curl", "libssh2", "openssl", "nghttp2", "zlib"],
+  "aria2Configure": ["--disable-bittorrent", "--without-libssh2"],
+  "curlProtocols": ["http", "https", "ftp", "sftp"],
+  "requiresCurlWorkerFeature": "native-stack",
+  "systemLibrariesAllowed": false,
+  "sizeBudget": 20971520
+}

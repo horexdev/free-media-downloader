@@ -1,0 +1,12 @@
+packages:
+  - .
+
+allowBuilds:
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@sveltejs/vite-plugin-svelte@7.3.0'
+
+onlyBuiltDependencies:
+  - '@tauri-apps/cli'
+  - esbuild

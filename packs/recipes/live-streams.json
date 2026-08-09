@@ -1,0 +1,8 @@
+{
+  "packId": "live-streams",
+  "version": "8.5.0",
+  "components": ["streamlink", "n-m3u8dl-re"],
+  "pythonBundle": { "format": "pyinstaller-one-folder", "systemPythonAllowed": false },
+  "dependencies": [{ "packId": "ffmpeg-standard", "version": ">=9.0.0", "required": true }],
+  "sizeBudget": 57671680
+}

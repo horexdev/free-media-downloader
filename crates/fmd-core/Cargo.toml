@@ -1,0 +1,42 @@
+[package]
+name = "fmd-core"
+description = "Domain core for Free Media Downloader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+fmd-curl-worker = { path = "../fmd-curl-worker" }
+futures-util.workspace = true
+parking_lot.workspace = true
+quick-xml.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tough.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+url.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile = "3.24.0"

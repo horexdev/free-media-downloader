@@ -1,0 +1,8 @@
+{
+  "packId": "video-core",
+  "version": "2026.7.4",
+  "components": ["yt-dlp", "deno"],
+  "dependencies": [{ "packId": "ffmpeg-standard", "version": ">=9.0.0", "required": true }],
+  "selfTests": [["yt-dlp", "--version"], ["deno", "--version"]],
+  "sizeBudget": 131072000
+}

@@ -1,0 +1,17 @@
+{
+  "packId": "ffmpeg-standard",
+  "version": "9.0.0",
+  "component": "ffmpeg",
+  "configure": [
+    "--disable-debug", "--disable-doc", "--disable-gpl", "--disable-nonfree",
+    "--disable-programs", "--enable-ffmpeg", "--enable-ffprobe",
+    "--enable-protocol=file,http,https,tcp,tls,udp,crypto",
+    "--enable-demuxer=mov,matroska,webm,hls,dash,mpegts,mp3,ogg,wav,flac",
+    "--enable-muxer=mp4,matroska,webm,mpegts,mp3,ogg,wav,flac",
+    "--enable-decoder=aac,opus,vorbis,mp3,flac,h264,hevc,av1,vp8,vp9",
+    "--enable-encoder=aac,opus,vorbis,flac,pcm_s16le",
+    "--enable-filter=aresample,scale,format,aformat"
+  ],
+  "forbiddenConfigureTokens": ["--enable-gpl", "--enable-nonfree"],
+  "sizeBudget": 57671680
+}

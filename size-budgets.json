@@ -1,0 +1,10 @@
+{
+  "windows-portable-core": 15728640,
+  "macos-archive": 20971520,
+  "linux-appimage": 89128960,
+  "ffmpeg-standard": 57671680,
+  "general-downloads": 20971520,
+  "video-core": 131072000,
+  "live-streams": 57671680,
+  "galleries": 31457280
+}

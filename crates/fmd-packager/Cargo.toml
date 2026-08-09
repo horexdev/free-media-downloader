@@ -1,0 +1,16 @@
+[package]
+name = "fmd-packager"
+description = "Deterministic engine pack assembler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+fmd-core = { path = "../fmd-core" }
+serde_json.workspace = true
+sha2.workspace = true
+zip.workspace = true

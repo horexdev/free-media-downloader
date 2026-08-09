@@ -1,0 +1,33 @@
+[package]
+name = "fmd-app"
+description = "Tauri desktop shell for Free Media Downloader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "fmd_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+directories.workspace = true
+fmd-core = { path = "../crates/fmd-core" }
+serde.workspace = true
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.2"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ts-rs.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

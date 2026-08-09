@@ -1,0 +1,7 @@
+{
+  "packId": "galleries",
+  "version": "1.32.9",
+  "components": ["gallery-dl"],
+  "pythonBundle": { "format": "pyinstaller-one-folder", "systemPythonAllowed": false },
+  "sizeBudget": 31457280
+}
