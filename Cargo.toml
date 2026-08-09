@@ -25,6 +25,7 @@ base64 = "0.22.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde"] }
 directories = "6.0.0"
 fs2 = "0.4.3"
+flate2 = "1.1.9"
 futures-util = "0.3.33"
 libc = "0.2.180"
 parking_lot = "0.12.5"
@@ -45,6 +46,7 @@ unicode-normalization = "0.1.25"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 sha2 = "0.10.9"
 subtle = "2.6.1"
+tar = "0.4.44"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
 zeroize = { version = "1.8.2", features = ["derive"] }

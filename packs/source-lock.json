@@ -104,10 +104,24 @@
       "version": "8.5.0",
       "sourceUrl": "https://github.com/streamlink/streamlink/releases/download/8.5.0/streamlink-8.5.0.tar.gz",
       "sha256": "8082703734df7be0737c4d9be1debf572aae6669cfe5c5891441a7a1636ff320",
-      "signatureUrl": "https://github.com/streamlink/streamlink/releases/download/8.5.0/streamlink-8.5.0.tar.gz.asc"
+      "signatureUrl": "https://github.com/streamlink/streamlink/releases/download/8.5.0/streamlink-8.5.0.tar.gz.asc",
+      "binaryLicense": "BSD-2-Clause",
+      "license": {
+        "spdx": "BSD-2-Clause",
+        "url": "https://raw.githubusercontent.com/streamlink/streamlink/8.5.0/LICENSE",
+        "sha256": "61f889e15470e2203207fd674ef28b460a5c7ee437ed8d65c791ea522792c052"
+      }
     },
     "n-m3u8dl-re": {
       "version": "0.6.0-beta",
+      "source": "https://github.com/nilaoda/N_m3u8DL-RE",
+      "commit": "df70f0b3da0c630bd413bf617e758051f6b64757",
+      "binaryLicense": "MIT",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://raw.githubusercontent.com/nilaoda/N_m3u8DL-RE/v0.6.0-beta/LICENSE",
+        "sha256": "99c39a1a78cd3d844f336576c18645e7334d2d5034713e961973591149536081"
+      },
       "assets": {
         "windows-x64": { "url": "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.6.0-beta/N_m3u8DL-RE_v0.6.0-beta_win-x64_20260629.zip", "sha256": "3825fd42ee502f98a9378f6fdddb2f7822709f521806214f466db6935c950f1a" },
         "windows-arm64": { "url": "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.6.0-beta/N_m3u8DL-RE_v0.6.0-beta_win-arm64_20260629.zip", "sha256": "3a13527812a5f18b9981b3cd6f7f36bd17cd7d76b5f3273281a58354e5fcebd6" },
@@ -123,7 +137,17 @@
       "tag": "v1.32.9",
       "tagObject": "d308f2b1afb3d18b3790ba04ff98e0b72a97b2af",
       "commit": "86047cf67a12bdb6ff1085774f8ad9fc347e8da9",
-      "signatureRequired": true
+      "signatureRequired": false,
+      "binaryLicense": "GPL-2.0-only",
+      "sourceDistribution": {
+        "url": "https://files.pythonhosted.org/packages/b1/60/5131cd00162b86dbf3f4528d348eba2f97bc22e2b452855b23c51d5fe340/gallery_dl-1.32.9.tar.gz",
+        "sha256": "6847cf1b8fcb231b3a214965470ac64bfbe4f63e92f1d7dbda2d533c3930f07d"
+      },
+      "license": {
+        "spdx": "GPL-2.0-only",
+        "url": "https://raw.githubusercontent.com/mikf/gallery-dl/v1.32.9/LICENSE",
+        "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+      }
     },
     "aria2": {
       "version": "1.37.0+fmd.1",

@@ -19,8 +19,75 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match arguments.first().and_then(|value| value.to_str()) {
         Some("package") => package(&arguments[1..]),
         Some("extract-zip-entry") => extract_zip_entry(&arguments[1..]),
+        Some("extract-tar-gz-entry") => extract_tar_gz_entry(&arguments[1..]),
         _ => package(&arguments),
     }
+}
+
+fn extract_tar_gz_entry(arguments: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.len() != 3 {
+        return Err(
+            "usage: fmd-packager extract-tar-gz-entry <archive.tar.gz> <entry-name> <output-file>"
+                .into(),
+        );
+    }
+    let archive_path = PathBuf::from(&arguments[0]);
+    let entry_name = arguments[1]
+        .to_str()
+        .ok_or("tar entry name must be valid UTF-8")?
+        .replace('\\', "/");
+    fmd_core::engine::validate_relative_path(&entry_name)?;
+    let output = PathBuf::from(&arguments[2]);
+    if output.exists() {
+        return Err("extraction output must not exist".into());
+    }
+
+    let compressed = File::open(archive_path)?;
+    let decoder = flate2::read::GzDecoder::new(compressed);
+    let mut archive = tar::Archive::new(decoder);
+    let mut extracted = false;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let normalized_path = normalized(&path);
+        fmd_core::engine::validate_relative_path(&normalized_path)?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err("tar archive contains a non-regular entry".into());
+        }
+        if entry.size() > 512 * 1024 * 1024 {
+            return Err("tar entry exceeds the extraction limit".into());
+        }
+        if normalized_path != entry_name {
+            continue;
+        }
+        if extracted {
+            return Err("tar archive contains a duplicate requested entry".into());
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)?;
+        if let Err(error) = std::io::copy(&mut entry, &mut destination) {
+            drop(destination);
+            let _ = fs::remove_file(&output);
+            return Err(error.into());
+        }
+        destination.flush()?;
+        destination.sync_all()?;
+        extracted = true;
+    }
+    if !extracted {
+        return Err("requested tar entry was not found".into());
+    }
+    println!("{}", output.display());
+    Ok(())
 }
 
 fn package(arguments: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
@@ -172,6 +239,7 @@ fn collect_files(
 
 fn describe(root: &Path, path: &Path) -> Result<PackFile, Box<dyn std::error::Error>> {
     let relative = normalized(path.strip_prefix(root)?);
+    let executable = payload_file_is_executable(path, &relative)?;
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -184,7 +252,7 @@ fn describe(root: &Path, path: &Path) -> Result<PackFile, Box<dyn std::error::Er
     }
     let role = if relative.starts_with("LICENSES/") {
         PackFileRole::License
-    } else if relative.starts_with("bin/") {
+    } else if executable {
         PackFileRole::Executable
     } else if relative.starts_with("lib/") {
         PackFileRole::Library
@@ -197,9 +265,32 @@ fn describe(root: &Path, path: &Path) -> Result<PackFile, Box<dyn std::error::Er
         path: relative,
         size: std::fs::metadata(path)?.len(),
         sha256: format!("{:x}", hasher.finalize()),
-        executable: matches!(role, PackFileRole::Executable),
+        executable,
         role,
     })
+}
+
+fn payload_file_is_executable(
+    path: &Path,
+    relative: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if !relative.starts_with("bin/") {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return Ok(fs::metadata(path)?.permissions().mode() & 0o111 != 0);
+    }
+    #[cfg(windows)]
+    {
+        return Ok(path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")));
+    }
+    #[allow(unreachable_code)]
+    Ok(false)
 }
 
 fn require_pack_metadata(payload: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -271,6 +362,63 @@ mod tests {
             extract_zip_entry(&[
                 archive_path.into_os_string(),
                 OsString::from("deno"),
+                output.clone().into_os_string(),
+            ])
+            .is_err()
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn extracts_only_a_regular_tar_gz_entry() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("input.tar.gz");
+        let output = temporary.path().join("output").join("engine");
+        let compressed = File::create(&archive_path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(compressed, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let bytes = b"binary";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "engine", &bytes[..])
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+
+        extract_tar_gz_entry(&[
+            archive_path.into_os_string(),
+            OsString::from("engine"),
+            output.clone().into_os_string(),
+        ])
+        .unwrap();
+        assert_eq!(fs::read(output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn rejects_a_tar_gz_with_a_link() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("input.tar.gz");
+        let output = temporary.path().join("engine");
+        let compressed = File::create(&archive_path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(compressed, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_link_name("target").unwrap();
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "engine", std::io::empty())
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+
+        assert!(
+            extract_tar_gz_entry(&[
+                archive_path.into_os_string(),
+                OsString::from("engine"),
                 output.clone().into_os_string(),
             ])
             .is_err()
