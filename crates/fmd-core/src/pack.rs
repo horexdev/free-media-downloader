@@ -299,6 +299,7 @@ pub struct DownloadedTarget {
 pub struct ExtractionLimits {
     pub max_files: usize,
     pub max_expanded_bytes: u64,
+    pub max_compression_ratio: u64,
 }
 
 impl Default for ExtractionLimits {
@@ -306,6 +307,7 @@ impl Default for ExtractionLimits {
         Self {
             max_files: MAX_ARCHIVE_FILES,
             max_expanded_bytes: 1024 * 1024 * 1024,
+            max_compression_ratio: 200,
         }
     }
 }
@@ -317,6 +319,29 @@ pub struct ActivationPointer {
     pub target: TargetId,
     pub security_sequence: u64,
     pub manifest_sha256: String,
+}
+
+impl ActivationPointer {
+    fn validate(&self, expected_pack_id: &str) -> Result<(), CoreError> {
+        validate_component(&self.pack_id)?;
+        validate_component(&self.version)?;
+        if self.pack_id != expected_pack_id || self.security_sequence == 0 {
+            return Err(CoreError::SupplyChain(
+                "activation pointer identity is invalid".into(),
+            ));
+        }
+        if self.manifest_sha256.len() != 64
+            || !self
+                .manifest_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::SupplyChain(
+                "activation pointer digest is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -352,7 +377,32 @@ impl PackLayout {
         if !path.is_file() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_slice(&fs::read(path)?)?))
+        let pointer: ActivationPointer = serde_json::from_slice(&fs::read(path)?)?;
+        pointer.validate(id)?;
+        Ok(Some(pointer))
+    }
+
+    pub fn active_pointers(&self) -> Result<Vec<ActivationPointer>, CoreError> {
+        let active = self.root.join("active");
+        if !active.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut pointers = Vec::new();
+        for entry in fs::read_dir(active)? {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| CoreError::SupplyChain("activation filename is invalid".into()))?;
+            let pointer: ActivationPointer = serde_json::from_slice(&fs::read(&path)?)?;
+            pointer.validate(id)?;
+            pointers.push(pointer);
+        }
+        pointers.sort_by(|left, right| left.pack_id.cmp(&right.pack_id));
+        Ok(pointers)
     }
 
     pub fn installed_engines(&self) -> Result<Vec<InstalledEngine>, CoreError> {
@@ -361,12 +411,7 @@ impl PackLayout {
             return Ok(Vec::new());
         }
         let mut engines = Vec::new();
-        for entry in fs::read_dir(active)? {
-            let path = entry?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let pointer: ActivationPointer = serde_json::from_slice(&fs::read(&path)?)?;
+        for pointer in self.active_pointers()? {
             let root =
                 self.version_directory(&pointer.pack_id, &pointer.version, pointer.target)?;
             let manifest_bytes = fs::read(root.join("manifest.json"))?;
@@ -378,6 +423,14 @@ impl PackLayout {
             }
             let manifest: PackManifestV1 = serde_json::from_slice(&manifest_bytes)?;
             manifest.validate(ADAPTER_API_VERSION, pointer.target)?;
+            if manifest.id != pointer.pack_id
+                || manifest.version != pointer.version
+                || manifest.security_sequence != pointer.security_sequence
+            {
+                return Err(CoreError::SupplyChain(
+                    "active manifest identity does not match its pointer".into(),
+                ));
+            }
             manifest.verify_payload(&root)?;
             engines.extend(
                 manifest
@@ -395,6 +448,116 @@ impl PackLayout {
         Ok(engines)
     }
 
+    pub fn activate_existing(
+        &self,
+        id: &str,
+        version: &str,
+        target: TargetId,
+        minimum_security_sequence: u64,
+    ) -> Result<ActivationPointer, CoreError> {
+        let root = self.version_directory(id, version, target)?;
+        let manifest: PackManifestV1 =
+            serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
+        manifest.validate(ADAPTER_API_VERSION, target)?;
+        if manifest.id != id
+            || manifest.version != version
+            || manifest.security_sequence < minimum_security_sequence
+        {
+            return Err(CoreError::SupplyChain(
+                "rollback candidate is incompatible or below the security high-water mark".into(),
+            ));
+        }
+        self.activate(&manifest)
+    }
+
+    pub fn recover_staging(&self) -> Result<usize, CoreError> {
+        let staging = self.root.join("staging");
+        if !staging.is_dir() {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        for entry in fs::read_dir(&staging)? {
+            let path = entry?.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                return Err(CoreError::SupplyChain(
+                    "pack staging contains an unexpected link".into(),
+                ));
+            }
+            if metadata.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+            removed += 1;
+        }
+        sync_directory(&staging)?;
+        Ok(removed)
+    }
+
+    pub fn garbage_collect_unleased(
+        &self,
+        leases: &std::collections::BTreeSet<(String, String, String)>,
+    ) -> Result<Vec<String>, CoreError> {
+        if !self.root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let active = self
+            .active_pointers()?
+            .into_iter()
+            .map(|pointer| (pointer.pack_id, pointer.version, pointer.target.to_string()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut removed = Vec::new();
+        for pack_entry in fs::read_dir(&self.root)? {
+            let pack_path = pack_entry?.path();
+            let Some(pack_id) = pack_path.file_name().and_then(|value| value.to_str()) else {
+                return Err(CoreError::SupplyChain(
+                    "pack directory name is invalid".into(),
+                ));
+            };
+            if matches!(pack_id, "active" | "staging") {
+                continue;
+            }
+            validate_component(pack_id)?;
+            reject_link_or_non_directory(&pack_path)?;
+            for version_entry in fs::read_dir(&pack_path)? {
+                let version_path = version_entry?.path();
+                let version = version_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| CoreError::SupplyChain("pack version path is invalid".into()))?;
+                validate_component(version)?;
+                reject_link_or_non_directory(&version_path)?;
+                for target_entry in fs::read_dir(&version_path)? {
+                    let target_path = target_entry?.path();
+                    let target = target_path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| {
+                            CoreError::SupplyChain("pack target path is invalid".into())
+                        })?;
+                    target.parse::<TargetId>()?;
+                    reject_link_or_non_directory(&target_path)?;
+                    let identity = (pack_id.to_owned(), version.to_owned(), target.to_owned());
+                    if active.contains(&identity) || leases.contains(&identity) {
+                        continue;
+                    }
+                    fs::remove_dir_all(&target_path)?;
+                    removed.push(format!("{pack_id}@{version}/{target}"));
+                }
+                if fs::read_dir(&version_path)?.next().is_none() {
+                    fs::remove_dir(&version_path)?;
+                }
+            }
+            if fs::read_dir(&pack_path)?.next().is_none() {
+                fs::remove_dir(&pack_path)?;
+            }
+        }
+        removed.sort();
+        sync_directory(&self.root)?;
+        Ok(removed)
+    }
+
     pub fn resolve_engine(&self, id: &str) -> Result<Option<InstalledEngine>, CoreError> {
         Ok(self
             .installed_engines()?
@@ -403,6 +566,7 @@ impl PackLayout {
     }
 
     pub fn activate(&self, manifest: &PackManifestV1) -> Result<ActivationPointer, CoreError> {
+        manifest.validate(ADAPTER_API_VERSION, manifest.target)?;
         let directory = self.version_directory(&manifest.id, &manifest.version, manifest.target)?;
         manifest.verify_payload(&directory)?;
         let manifest_bytes = fs::read(directory.join("manifest.json"))?;
@@ -418,6 +582,16 @@ impl PackLayout {
         atomic_write_json(&active.join(format!("{}.json", manifest.id)), &pointer)?;
         Ok(pointer)
     }
+}
+
+fn reject_link_or_non_directory(path: &Path) -> Result<(), CoreError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(CoreError::SupplyChain(
+            "pack layout contains a link or non-directory entry".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -440,17 +614,57 @@ impl PackInstaller {
     }
 
     pub fn install_archive(&self, archive_path: &Path) -> Result<PackManifestV1, CoreError> {
+        self.install_archive_inner(archive_path, None)
+    }
+
+    pub fn install_authorized_archive(
+        &self,
+        archive_path: &Path,
+        authorization: &AuthorizedExternalTarget,
+    ) -> Result<PackManifestV1, CoreError> {
+        if authorization.target != self.target {
+            return Err(CoreError::SupplyChain(
+                "authorized target does not match the installer target".into(),
+            ));
+        }
+        self.install_archive_inner(archive_path, Some(authorization))
+    }
+
+    fn install_archive_inner(
+        &self,
+        archive_path: &Path,
+        authorization: Option<&AuthorizedExternalTarget>,
+    ) -> Result<PackManifestV1, CoreError> {
         let staging = self
             .layout
             .root
             .join("staging")
             .join(Uuid::new_v4().to_string());
         fs::create_dir_all(&staging)?;
-        let result = self.extract_and_verify(archive_path, &staging);
-        if result.is_err() {
+        let result = self.install_staged(archive_path, &staging, authorization);
+        if staging.exists() {
             let _ = fs::remove_dir_all(&staging);
         }
-        let manifest = result?;
+        result
+    }
+
+    fn install_staged(
+        &self,
+        archive_path: &Path,
+        staging: &Path,
+        authorization: Option<&AuthorizedExternalTarget>,
+    ) -> Result<PackManifestV1, CoreError> {
+        let manifest = self.extract_and_verify(archive_path, staging)?;
+        if authorization.is_some_and(|expected| {
+            manifest.id != expected.pack_id
+                || manifest.version != expected.pack_version
+                || manifest.target != expected.target
+                || manifest.security_sequence != expected.security_sequence
+        }) {
+            return Err(CoreError::SupplyChain(
+                "pack manifest does not match its TUF authorization".into(),
+            ));
+        }
         for dependency in manifest
             .dependencies
             .iter()
@@ -486,7 +700,6 @@ impl PackInstaller {
                     "immutable pack version already exists with different content".into(),
                 ));
             }
-            fs::remove_dir_all(&staging)?;
             return Ok(existing);
         }
         fs::create_dir_all(
@@ -494,7 +707,12 @@ impl PackInstaller {
                 .parent()
                 .ok_or_else(|| CoreError::SupplyChain("pack destination has no parent".into()))?,
         )?;
-        fs::rename(&staging, &final_directory)?;
+        replace_file(staging, &final_directory)?;
+        sync_directory(
+            final_directory
+                .parent()
+                .ok_or_else(|| CoreError::SupplyChain("pack destination has no parent".into()))?,
+        )?;
         Ok(manifest)
     }
 
@@ -511,6 +729,7 @@ impl PackInstaller {
             ));
         }
         let mut expanded = 0_u64;
+        let mut archive_paths = std::collections::BTreeSet::new();
         for index in 0..archive.len() {
             let mut entry = archive
                 .by_index(index)
@@ -520,11 +739,26 @@ impl PackInstaller {
                 .ok_or_else(|| CoreError::SupplyChain("unsafe ZIP path".into()))?
                 .to_path_buf();
             let name = enclosed.to_string_lossy().replace('\\', "/");
-            crate::engine::validate_relative_path(name.trim_end_matches('/'))?;
+            let name = name.trim_end_matches('/');
+            crate::engine::validate_relative_path(name)?;
+            if !archive_paths.insert(crate::engine::collision_key(name)) {
+                return Err(CoreError::SupplyChain(
+                    "ZIP contains duplicate or colliding paths".into(),
+                ));
+            }
             expanded = expanded.saturating_add(entry.size());
             if expanded > self.limits.max_expanded_bytes {
                 return Err(CoreError::SupplyChain(
                     "pack exceeds expanded size limit".into(),
+                ));
+            }
+            let ratio_limit = entry
+                .compressed_size()
+                .saturating_mul(self.limits.max_compression_ratio)
+                .saturating_add(1024 * 1024);
+            if entry.size() > ratio_limit {
+                return Err(CoreError::SupplyChain(
+                    "pack entry exceeds compression ratio limit".into(),
                 ));
             }
             if let Some(mode) = entry.unix_mode() {
@@ -562,14 +796,33 @@ impl PackInstaller {
         if !staging.join("LICENSES").is_dir()
             || !staging.join("sbom.spdx.json").is_file()
             || !staging.join("provenance.intoto.jsonl").is_file()
+            || !staging.join("sources.json").is_file()
         {
             return Err(CoreError::SupplyChain(
-                "pack is missing licenses, SBOM, or provenance".into(),
+                "pack is missing licenses, SBOM, provenance, or source metadata".into(),
             ));
         }
         manifest.verify_payload(staging)?;
+        apply_manifest_permissions(staging, &manifest)?;
         Ok(manifest)
     }
+}
+
+#[cfg(unix)]
+fn apply_manifest_permissions(root: &Path, manifest: &PackManifestV1) -> Result<(), CoreError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for file in &manifest.files {
+        let path = root.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let mode = if file.executable { 0o755 } else { 0o644 };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_manifest_permissions(_root: &Path, _manifest: &PackManifestV1) -> Result<(), CoreError> {
+    Ok(())
 }
 
 fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CoreError> {
@@ -590,7 +843,21 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CoreErr
     file.flush()?;
     file.sync_all()?;
     replace_file(&candidate, path)?;
-    File::open(parent)?.sync_all()?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), CoreError> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), CoreError> {
+    // replace_file uses MOVEFILE_WRITE_THROUGH on Windows. Opening directories for FlushFileBuffers
+    // is not portable across supported Windows filesystems, so there is no additional directory
+    // flush here.
     Ok(())
 }
 
@@ -637,8 +904,97 @@ fn replace_file(candidate: &Path, destination: &Path) -> Result<(), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{
+        AdapterId, EngineCapability, EngineDescriptor, PackDependency, PackFile, PackFileRole,
+        PackSelfTest, UpstreamComponent,
+    };
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
+
+    fn write_test_pack(
+        path: &Path,
+        dependencies: Vec<PackDependency>,
+        extra: Option<(&str, &[u8])>,
+    ) {
+        let payload = [
+            ("bin/tool", b"tool".as_slice(), PackFileRole::Executable),
+            (
+                "LICENSES/test.txt",
+                b"license".as_slice(),
+                PackFileRole::License,
+            ),
+            ("sbom.spdx.json", b"{}".as_slice(), PackFileRole::Metadata),
+            (
+                "provenance.intoto.jsonl",
+                b"{}\n".as_slice(),
+                PackFileRole::Metadata,
+            ),
+            ("sources.json", b"{}".as_slice(), PackFileRole::Metadata),
+        ];
+        let files = payload
+            .iter()
+            .map(|(path, bytes, role)| PackFile {
+                path: (*path).into(),
+                size: bytes.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(bytes)),
+                role: *role,
+                executable: matches!(*role, PackFileRole::Executable),
+            })
+            .collect();
+        let manifest = PackManifestV1 {
+            schema_version: 1,
+            id: "test-pack".into(),
+            version: "1.0.0".into(),
+            target: TargetId::current().unwrap(),
+            core_api_min: 1,
+            core_api_max: 1,
+            security_sequence: 1,
+            dependencies,
+            engines: vec![EngineDescriptor {
+                id: "test-engine".into(),
+                version: "1.0.0".into(),
+                adapter_id: AdapterId::FfmpegV1,
+                adapter_api: 1,
+                entrypoint: "bin/tool".into(),
+                companions: BTreeMap::new(),
+                capabilities: vec![EngineCapability::PostProcessing],
+            }],
+            components: vec![UpstreamComponent {
+                name: "test-component".into(),
+                version: "1.0.0".into(),
+                source_url: "https://example.test/source.tar.xz".into(),
+                source_revision: "v1.0.0".into(),
+                source_sha256: "11".repeat(32),
+                license_id: "MIT".into(),
+                original_sha256: None,
+            }],
+            files,
+            self_tests: vec![PackSelfTest {
+                engine_id: "test-engine".into(),
+                expected_version: "1.0.0".into(),
+                timeout_seconds: 5,
+            }],
+        };
+        let file = File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        archive.start_file("manifest.json", options).unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        for (name, bytes, _) in payload {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        if let Some((name, bytes)) = extra {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap();
+    }
 
     #[test]
     fn production_origins_are_https_and_allowlisted() {
@@ -677,5 +1033,196 @@ mod tests {
         );
         assert!(installer.install_archive(&archive_path).is_err());
         assert!(!temporary.path().join("escape").exists());
+    }
+
+    #[test]
+    fn rejects_undeclared_payload_and_cleans_staging() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("extra.zip");
+        write_test_pack(&archive_path, Vec::new(), Some(("extra.txt", b"extra")));
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let installer = PackInstaller::new(
+            layout.clone(),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        assert!(installer.install_archive(&archive_path).is_err());
+        assert_eq!(layout.recover_staging().unwrap(), 0);
+    }
+
+    #[test]
+    fn installs_a_complete_declared_pack_immutably() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("valid.zip");
+        write_test_pack(&archive_path, Vec::new(), None);
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let installer = PackInstaller::new(
+            layout.clone(),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        let manifest = installer.install_archive(&archive_path).unwrap();
+        let installed = layout
+            .version_directory(&manifest.id, &manifest.version, manifest.target)
+            .unwrap();
+        assert!(installed.join("bin/tool").is_file());
+        assert_eq!(layout.recover_staging().unwrap(), 0);
+        assert_eq!(installer.install_archive(&archive_path).unwrap(), manifest);
+    }
+
+    #[test]
+    fn garbage_collection_preserves_only_active_or_leased_versions() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("valid.zip");
+        write_test_pack(&archive_path, Vec::new(), None);
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let installer = PackInstaller::new(
+            layout.clone(),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        let manifest = installer.install_archive(&archive_path).unwrap();
+        let identity = (
+            manifest.id.clone(),
+            manifest.version.clone(),
+            manifest.target.to_string(),
+        );
+        let leases = std::collections::BTreeSet::from([identity]);
+        assert!(layout.garbage_collect_unleased(&leases).unwrap().is_empty());
+        assert!(
+            layout
+                .version_directory(&manifest.id, &manifest.version, manifest.target)
+                .unwrap()
+                .is_dir()
+        );
+        assert_eq!(
+            layout
+                .garbage_collect_unleased(&Default::default())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let manifest = installer.install_archive(&archive_path).unwrap();
+        layout.activate(&manifest).unwrap();
+        assert!(
+            layout
+                .garbage_collect_unleased(&Default::default())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejects_case_collisions_before_extraction() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("collision.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("bin/Tool", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"one").unwrap();
+        archive
+            .start_file("bin/tool", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"two").unwrap();
+        archive.finish().unwrap();
+        let installer = PackInstaller::new(
+            PackLayout::new(temporary.path().join("engines")),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        assert!(installer.install_archive(&archive_path).is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_compression_ratio() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("bomb.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "large.bin",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        archive.write_all(&vec![0_u8; 2 * 1024 * 1024]).unwrap();
+        archive.finish().unwrap();
+        let installer = PackInstaller::new(
+            PackLayout::new(temporary.path().join("engines")),
+            TargetId::current().unwrap(),
+            ExtractionLimits {
+                max_files: 10,
+                max_expanded_bytes: 4 * 1024 * 1024,
+                max_compression_ratio: 2,
+            },
+        );
+        assert!(installer.install_archive(&archive_path).is_err());
+    }
+
+    #[test]
+    fn dependency_failure_does_not_leave_staging() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("dependency.zip");
+        write_test_pack(
+            &archive_path,
+            vec![PackDependency {
+                pack_id: "ffmpeg-standard".into(),
+                version_req: "^9.0".into(),
+                required: true,
+            }],
+            None,
+        );
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let installer = PackInstaller::new(
+            layout.clone(),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        assert!(installer.install_archive(&archive_path).is_err());
+        assert_eq!(layout.recover_staging().unwrap(), 0);
+    }
+
+    #[test]
+    fn authorization_mismatch_is_rejected_before_finalization() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("authorized.zip");
+        write_test_pack(&archive_path, Vec::new(), None);
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let installer = PackInstaller::new(
+            layout.clone(),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        let authorization = AuthorizedExternalTarget {
+            name: "packs/test-pack.zip".into(),
+            pack_id: "different-pack".into(),
+            pack_version: "1.0.0".into(),
+            target: TargetId::current().unwrap(),
+            security_sequence: 1,
+            download_url: Url::parse("https://example.test/test-pack.zip").unwrap(),
+            length: fs::metadata(&archive_path).unwrap().len(),
+            sha256: "44".repeat(32),
+        };
+        assert!(
+            installer
+                .install_authorized_archive(&archive_path, &authorization)
+                .is_err()
+        );
+        assert!(!layout.root().join("different-pack").exists());
+        assert!(!layout.root().join("test-pack").exists());
+    }
+
+    #[test]
+    fn startup_recovery_removes_incomplete_staging() {
+        let temporary = tempdir().unwrap();
+        let layout = PackLayout::new(temporary.path().join("engines"));
+        let abandoned = layout.root().join("staging/transaction/bin");
+        fs::create_dir_all(&abandoned).unwrap();
+        fs::write(abandoned.join("partial"), b"partial").unwrap();
+        assert_eq!(layout.recover_staging().unwrap(), 1);
+        assert!(layout.root().join("staging").is_dir());
     }
 }

@@ -953,6 +953,7 @@ name = "fmd-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "directories",
  "fmd-core",
  "serde",
@@ -993,6 +994,7 @@ dependencies = [
  "tough",
  "tracing",
  "ts-rs",
+ "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.61.2",

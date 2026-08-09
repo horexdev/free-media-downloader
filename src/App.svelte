@@ -168,7 +168,20 @@
     version: string;
     target: string;
     securitySequence: number;
+    size: number;
     installed: boolean;
+  }
+
+  function formatBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) return "—";
+    const units = ["B", "KiB", "MiB", "GiB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${new Intl.NumberFormat(currentLocale, { maximumFractionDigits: unit === 0 ? 0 : 1 }).format(value)} ${units[unit]}`;
   }
 
   function stateLabel(state: JobState): string {
@@ -327,7 +340,7 @@
       <section class="job-list" aria-label={m.packs_title()}>
         {#each availablePacks as pack (pack.targetName)}
           <article class="job-card">
-            <div class="job-copy"><h3>{pack.packId}</h3><p>{pack.version} · {pack.target}</p></div>
+            <div class="job-copy"><h3>{pack.packId}</h3><p>{pack.version} · {pack.target} · {formatBytes(pack.size)}</p></div>
             {#if pack.installed}
               <span class="state-chip">{m.pack_installed()}</span>
             {:else}

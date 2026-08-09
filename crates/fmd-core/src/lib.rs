@@ -32,7 +32,7 @@ pub use process::{
 pub use routing::{RouteDecision, Router};
 pub use scheduler::JobScheduler;
 pub use source::{InputSource, SourceKind};
-pub use storage::{JobStore, SftpHostKeyRecord};
+pub use storage::{JobStore, PackConsentRecord, SftpHostKeyRecord};
 
 /// IPC adapter version required by engine descriptors shipped for this core.
 pub const ADAPTER_API_VERSION: u32 = 1;

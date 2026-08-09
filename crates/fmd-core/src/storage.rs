@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,6 +9,8 @@ use ts_rs::TS;
 
 use crate::error::CoreError;
 use crate::job::{JobId, JobSnapshot, JobState};
+
+const DATABASE_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -20,6 +23,17 @@ pub struct SftpHostKeyRecord {
     pub first_seen: String,
     pub last_verified: String,
     pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackConsentRecord {
+    pub pack_id: String,
+    pub manifest_sha256: String,
+    pub license_digest: String,
+    pub accepted_size: u64,
+    pub auto_update: bool,
+    pub accepted_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone)]
@@ -39,9 +53,19 @@ impl JobStore {
 
     fn initialize(mut connection: Connection) -> Result<Self, CoreError> {
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        let schema_version: i64 =
+            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if schema_version > DATABASE_SCHEMA_VERSION {
+            return Err(CoreError::Storage(rusqlite::Error::InvalidQuery));
+        }
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY NOT NULL,
                 state TEXT NOT NULL,
@@ -61,6 +85,24 @@ impl JobStore {
             CREATE TABLE IF NOT EXISTS pack_security_high_water (
                 pack_id TEXT PRIMARY KEY NOT NULL,
                 security_sequence INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pack_consents (
+                pack_id TEXT PRIMARY KEY NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                license_digest TEXT NOT NULL,
+                accepted_size INTEGER NOT NULL,
+                auto_update INTEGER NOT NULL DEFAULT 0,
+                accepted_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pack_activation_history (
+                pack_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                target TEXT NOT NULL,
+                security_sequence INTEGER NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                activated_at TEXT NOT NULL,
+                PRIMARY KEY (pack_id, version, target, manifest_sha256)
             );
             CREATE TABLE IF NOT EXISTS engine_leases (
                 job_id TEXT NOT NULL,
@@ -108,7 +150,16 @@ impl JobStore {
                 journal_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            PRAGMA user_version = 2;
+            CREATE TABLE IF NOT EXISTS update_receipts (
+                target_name TEXT PRIMARY KEY NOT NULL,
+                version TEXT NOT NULL,
+                security_sequence INTEGER NOT NULL,
+                length INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            PRAGMA user_version = 3;
             ",
         )?;
         transaction.commit()?;
@@ -226,11 +277,42 @@ impl JobStore {
         &self,
         pointer: &crate::pack::ActivationPointer,
     ) -> Result<(), CoreError> {
+        self.commit_pack_activation(pointer)
+    }
+
+    pub fn commit_pack_activation(
+        &self,
+        pointer: &crate::pack::ActivationPointer,
+    ) -> Result<(), CoreError> {
         let target = pointer.target.to_string();
         let sequence = i64::try_from(pointer.security_sequence).map_err(|_| {
             CoreError::SupplyChain("pack security sequence exceeds SQLite range".into())
         })?;
-        self.connection.lock().execute(
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction()?;
+        let current = transaction
+            .query_row(
+                "SELECT security_sequence FROM pack_security_high_water WHERE pack_id = ?1",
+                [&pointer.pack_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if sequence < current {
+            return Err(CoreError::SupplyChain(
+                "pack security sequence rollback was rejected".into(),
+            ));
+        }
+        transaction.execute(
+            "
+            INSERT INTO pack_security_high_water (pack_id, security_sequence)
+            VALUES (?1, ?2)
+            ON CONFLICT(pack_id) DO UPDATE SET
+                security_sequence = MAX(security_sequence, excluded.security_sequence)
+            ",
+            params![pointer.pack_id, sequence],
+        )?;
+        transaction.execute(
             "
             INSERT INTO pack_active
                 (pack_id, version, target, security_sequence, manifest_sha256, activated_at)
@@ -250,6 +332,23 @@ impl JobStore {
                 pointer.manifest_sha256,
             ],
         )?;
+        transaction.execute(
+            "
+            INSERT INTO pack_activation_history
+                (pack_id, version, target, security_sequence, manifest_sha256, activated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+            ON CONFLICT(pack_id, version, target, manifest_sha256) DO UPDATE SET
+                activated_at = excluded.activated_at
+            ",
+            params![
+                pointer.pack_id,
+                pointer.version,
+                target,
+                sequence,
+                pointer.manifest_sha256,
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -285,6 +384,84 @@ impl JobStore {
             "DELETE FROM engine_leases WHERE job_id = ?1",
             [job_id.to_string()],
         )?)
+    }
+
+    pub fn leased_pack_versions(&self) -> Result<BTreeSet<(String, String, String)>, CoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT pack_id, version, target FROM engine_leases ORDER BY pack_id, version, target",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let mut leases = BTreeSet::new();
+        for row in rows {
+            leases.insert(row?);
+        }
+        Ok(leases)
+    }
+
+    pub fn save_pack_consent(&self, consent: &PackConsentRecord) -> Result<(), CoreError> {
+        crate::engine::validate_component(&consent.pack_id)?;
+        if !is_sha256(&consent.manifest_sha256) || !is_sha256(&consent.license_digest) {
+            return Err(CoreError::SupplyChain(
+                "pack consent contains an invalid digest".into(),
+            ));
+        }
+        let accepted_size = i64::try_from(consent.accepted_size)
+            .map_err(|_| CoreError::SupplyChain("pack consent size is too large".into()))?;
+        self.connection.lock().execute(
+            "
+            INSERT INTO pack_consents (
+                pack_id, manifest_sha256, license_digest, accepted_size,
+                auto_update, accepted_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(pack_id) DO UPDATE SET
+                manifest_sha256 = excluded.manifest_sha256,
+                license_digest = excluded.license_digest,
+                accepted_size = excluded.accepted_size,
+                auto_update = excluded.auto_update,
+                accepted_at = excluded.accepted_at,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                consent.pack_id,
+                consent.manifest_sha256,
+                consent.license_digest,
+                accepted_size,
+                consent.auto_update,
+                consent.accepted_at,
+                consent.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn pack_consent(&self, pack_id: &str) -> Result<Option<PackConsentRecord>, CoreError> {
+        self.connection
+            .lock()
+            .query_row(
+                "
+                SELECT pack_id, manifest_sha256, license_digest, accepted_size,
+                       auto_update, accepted_at, updated_at
+                FROM pack_consents WHERE pack_id = ?1
+                ",
+                [pack_id],
+                |row| {
+                    let accepted_size: i64 = row.get(3)?;
+                    Ok(PackConsentRecord {
+                        pack_id: row.get(0)?,
+                        manifest_sha256: row.get(1)?,
+                        license_digest: row.get(2)?,
+                        accepted_size: accepted_size.try_into().map_err(|_| {
+                            rusqlite::Error::IntegralValueOutOfRange(3, accepted_size)
+                        })?,
+                        auto_update: row.get(4)?,
+                        accepted_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(CoreError::from)
     }
 
     pub fn trust_sftp_host_key(&self, record: &SftpHostKeyRecord) -> Result<(), CoreError> {
@@ -349,6 +526,10 @@ impl JobStore {
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -426,5 +607,41 @@ mod tests {
                 .unwrap(),
             vec![record]
         );
+    }
+
+    #[test]
+    fn persists_pack_consent_without_secrets() {
+        let store = JobStore::open_in_memory().unwrap();
+        let consent = PackConsentRecord {
+            pack_id: "video-core".into(),
+            manifest_sha256: "11".repeat(32),
+            license_digest: "22".repeat(32),
+            accepted_size: 42,
+            auto_update: true,
+            accepted_at: "2026-08-09T00:00:00Z".into(),
+            updated_at: "2026-08-09T00:00:00Z".into(),
+        };
+        store.save_pack_consent(&consent).unwrap();
+        assert_eq!(store.pack_consent("video-core").unwrap(), Some(consent));
+    }
+
+    #[test]
+    fn activation_commit_advances_high_water_atomically() {
+        let store = JobStore::open_in_memory().unwrap();
+        let pointer = crate::pack::ActivationPointer {
+            pack_id: "video-core".into(),
+            version: "1.0.0".into(),
+            target: crate::engine::TargetId::current().unwrap(),
+            security_sequence: 3,
+            manifest_sha256: "33".repeat(32),
+        };
+        store.commit_pack_activation(&pointer).unwrap();
+        assert_eq!(store.pack_security_high_water("video-core").unwrap(), 3);
+
+        let mut rollback = pointer.clone();
+        rollback.version = "0.9.0".into();
+        rollback.security_sequence = 2;
+        assert!(store.commit_pack_activation(&rollback).is_err());
+        assert_eq!(store.pack_security_high_water("video-core").unwrap(), 3);
     }
 }
