@@ -53,7 +53,12 @@ const engineName = isLive ? "streamlink" : "gallery-dl";
 const bundleName = isLive ? "streamlink" : "gallery_dl";
 const primary = lock.components[engineName];
 const bundleDestination = join(payload, "bin", engineName);
-await cp(bundle, bundleDestination, { recursive: true, errorOnExist: true, force: false });
+await cp(bundle, bundleDestination, {
+  recursive: true,
+  dereference: true,
+  errorOnExist: true,
+  force: false,
+});
 await rejectDevelopmentFiles(bundleDestination);
 await cp(licenses, join(payload, "LICENSES", "python"), {
   recursive: true, errorOnExist: true, force: false,
