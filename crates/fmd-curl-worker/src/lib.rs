@@ -254,12 +254,26 @@ mod tests {
 
     #[test]
     fn hello_reports_backend_capabilities() {
-        assert!(matches!(
-            WorkerMessage::hello(),
-            WorkerMessage::Hello {
-                protocol_version: 2,
-                ..
-            }
-        ));
+        let WorkerMessage::Hello {
+            protocol_version,
+            capabilities,
+            ..
+        } = WorkerMessage::hello()
+        else {
+            panic!("hello must be the first worker message");
+        };
+        assert_eq!(protocol_version, 2);
+        #[cfg(not(fmd_native_sftp))]
+        assert!(
+            !capabilities
+                .iter()
+                .any(|item| item == "sftp_hostkey_callback")
+        );
+        #[cfg(fmd_native_sftp)]
+        assert!(
+            capabilities
+                .iter()
+                .any(|item| item == "sftp_hostkey_callback")
+        );
     }
 }
