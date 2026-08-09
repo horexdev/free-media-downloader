@@ -34,6 +34,17 @@ for (const [name, component] of Object.entries(lock.components)) {
       fail(`${name}.releaseVerification key fingerprint is invalid`);
     }
   }
+  if (component.signatureRequired && component.sourceDistribution) {
+    const verification = component.releaseVerification;
+    for (const item of [verification?.signature, verification?.publicKey]) {
+      if (!item?.url?.startsWith("https://") || !digest.test(item.sha256)) {
+        fail(`${name}.releaseVerification is incomplete`);
+      }
+    }
+    if (!/^[0-9A-F]{40}$/.test(verification.publicKey.fingerprint ?? "")) {
+      fail(`${name}.releaseVerification key fingerprint is invalid`);
+    }
+  }
   if (component.sourceDistribution &&
       (!component.sourceDistribution.url?.startsWith("https://") || !digest.test(component.sourceDistribution.sha256))) {
     fail(`${name}.sourceDistribution is invalid`);
@@ -42,6 +53,10 @@ for (const [name, component] of Object.entries(lock.components)) {
     if (!component.license.spdx || !component.license.url?.startsWith("https://") || !digest.test(component.license.sha256)) {
       fail(`${name}.license is invalid`);
     }
+  }
+  if (component.licenseFiles?.some((file) =>
+    !file.path || file.path.startsWith("/") || file.path.includes("..") || !digest.test(file.sha256))) {
+    fail(`${name}.licenseFiles is invalid`);
   }
   for (const field of ["commit", "baseCommit", "tagObject"]) {
     if (component[field] && !commit.test(component[field])) fail(`${name}.${field} is invalid`);
