@@ -81,6 +81,8 @@ pub enum CoreError {
     NonUtf8Path,
     #[error("supply-chain verification failed: {0}")]
     SupplyChain(String),
+    #[error("engine process timed out")]
+    ProcessTimedOut,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -107,6 +109,7 @@ impl From<CoreError> for ApiError {
             CoreError::SupplyChain(_) => {
                 Self::new("pack.verification_failed", EngineErrorKind::Integrity)
             }
+            CoreError::ProcessTimedOut => Self::new("engine.timed_out", EngineErrorKind::Transient),
             CoreError::Io(_) => Self::new("storage.io_failed", EngineErrorKind::Disk),
         }
     }
