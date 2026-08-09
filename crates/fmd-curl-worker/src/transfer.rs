@@ -672,6 +672,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "native-stack")]
     #[test]
     fn links_expected_libcurl_line() {
         assert!(curl::Version::get().version().starts_with("8.21."));
