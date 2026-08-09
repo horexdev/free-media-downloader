@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -13,6 +13,8 @@ const allowedHosts = new Set([
 ]);
 const options = parseArguments(process.argv.slice(2));
 if (!options.work) fail("missing --work");
+const transport = options.transport ?? "fetch";
+if (!new Set(["fetch", "curl"]).has(transport)) fail("unsupported source transport");
 const work = resolve(options.work);
 await requireAbsent(work);
 await mkdir(work, { recursive: true, mode: 0o700 });
@@ -61,7 +63,20 @@ async function download(input, destination) {
   if (!input?.url?.startsWith("https://") || !/^[0-9a-f]{64}$/.test(input.sha256)) {
     fail("source input is not fully locked");
   }
-  const response = await fetchWithRetries(input.url);
+  if (transport === "curl") {
+    await downloadWithCurl(input, destination);
+    return;
+  }
+  let response;
+  try {
+    response = await fetchWithRetries(input.url);
+  } catch (error) {
+    const hostname = new URL(input.url).hostname;
+    if (!new Set(["ffmpeg.org", "www.ffmpeg.org"]).has(hostname)) throw error;
+    console.error("fetch transport failed for " + hostname + "; retrying with curl");
+    await downloadWithCurl(input, destination);
+    return;
+  }
   if (!response.ok || !response.body) fail("download failed with HTTP " + response.status);
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maximumInputBytes) fail("source input is too large");
@@ -97,7 +112,50 @@ async function fetchWithRetries(input) {
       lastError = error;
     }
   }
-  fail(lastError instanceof Error ? lastError.message : "source download failed");
+  throw lastError ?? new Error("source download failed");
+}
+
+async function downloadWithCurl(input, destination) {
+  const origin = new URL(input.url);
+  if (origin.protocol !== "https:" ||
+      !new Set(["ffmpeg.org", "www.ffmpeg.org"]).has(origin.hostname)) {
+    fail("curl fallback is restricted to the FFmpeg source origin");
+  }
+  const curl = options.curl ?? "curl";
+  const result = spawnSync(curl, [
+    "--fail", "--silent", "--show-error",
+    "--proto", "=https", "--proto-redir", "=https",
+    "--max-redirs", "0", "--tlsv1.2",
+    "--connect-timeout", "20", "--max-time", "300",
+    "--retry", "5", "--retry-delay", "1", "--retry-all-errors",
+    "--max-filesize", String(maximumInputBytes),
+    "--output", destination,
+    "--url", input.url,
+  ], {
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    await rm(destination, { force: true });
+    const diagnostic = (result.stderr ?? "").trim();
+    fail("curl source download failed" + (diagnostic ? ": " + diagnostic : ""));
+  }
+  const metadata = await stat(destination).catch(() => null);
+  if (!metadata?.isFile() || metadata.size > maximumInputBytes) {
+    await rm(destination, { force: true });
+    fail("curl source input is missing or too large");
+  }
+  if (await sha256File(destination) !== input.sha256) {
+    await rm(destination, { force: true });
+    fail("curl source input digest mismatch");
+  }
+}
+
+async function sha256File(path) {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  return digest.digest("hex");
 }
 
 async function fetchWithPolicy(input) {

@@ -60,6 +60,8 @@ FFmpeg is built from the official `9.0` source tarball rather than a third-party
 Before a native build starts, `verify-ffmpeg-source.mjs` enforces the pinned tarball, detached
 signature, release-key hash, and exact release-key fingerprint in an isolated keyring. Downloads
 are HTTPS-only, origin-restricted, retried at most three times, and capped at 64 MiB.
+If the Node transport repeatedly fails against the direct FFmpeg origin, verification may retry
+through curl with redirects disabled and the same size, digest, and signature requirements.
 
 The current workflow also performs unsigned native build smoke tests for Linux and macOS on x64 and
 ARM64. Linux links a separately verified static OpenSSL build; macOS must select SecureTransport.
