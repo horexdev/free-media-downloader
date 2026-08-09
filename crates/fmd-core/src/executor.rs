@@ -304,12 +304,31 @@ impl JobExecutor {
                 ),
                 installation,
             };
+            let scheduler = self.scheduler.clone();
+            let downstream_events = Arc::clone(&self.events);
+            let progress_events: EventSink = Arc::new(move |event| {
+                if let JobEvent::Progress {
+                    id,
+                    downloaded_bytes,
+                    total_bytes,
+                    speed_bytes_per_second,
+                } = &event
+                {
+                    let _ = scheduler.update_progress(
+                        *id,
+                        *downloaded_bytes,
+                        *total_bytes,
+                        *speed_bytes_per_second,
+                    );
+                }
+                (downstream_events)(event);
+            });
             let mut tries = 0_u8;
             loop {
                 let outcome = adapter
                     .download(
                         context.clone(),
-                        Arc::clone(&self.events),
+                        Arc::clone(&progress_events),
                         cancellation.clone(),
                     )
                     .await;
@@ -333,6 +352,12 @@ impl JobExecutor {
                             Some(outcome.bytes),
                             None,
                         )?;
+                        (self.events)(JobEvent::Progress {
+                            id,
+                            downloaded_bytes: outcome.bytes,
+                            total_bytes: Some(outcome.bytes),
+                            speed_bytes_per_second: None,
+                        });
                         self.transition(id, JobState::Completed)?;
                         return Ok(());
                     }

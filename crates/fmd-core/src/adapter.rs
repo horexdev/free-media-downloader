@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -380,7 +380,7 @@ impl EngineAdapter for BuiltinCliAdapter {
     async fn download(
         &self,
         context: DownloadContext,
-        _events: EventSink,
+        events: EventSink,
         cancellation: CancellationToken,
     ) -> Result<DownloadOutcome, EngineFailure> {
         if self.id == AdapterId::CurlWorkerV2 {
@@ -390,11 +390,21 @@ impl EngineAdapter for BuiltinCliAdapter {
         let (command, expected_output) = self
             .download_command(&context)
             .map_err(|error| internal(error.to_string()))?;
-        let outcome = self
+        let monitor_stop = CancellationToken::new();
+        let monitor = tokio::spawn(monitor_staging_progress(
+            context.job_id,
+            context.staging.clone(),
+            Arc::clone(&events),
+            cancellation.clone(),
+            monitor_stop.clone(),
+        ));
+        let process_result = self
             .supervisor
             .run(ProcessSpec::cli(command), cancellation.clone())
-            .await
-            .map_err(process_failure)?;
+            .await;
+        monitor_stop.cancel();
+        let _ = monitor.await;
+        let outcome = process_result.map_err(process_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -452,6 +462,58 @@ impl EngineAdapter for BuiltinCliAdapter {
             ),
         }
     }
+}
+
+async fn monitor_staging_progress(
+    job_id: JobId,
+    staging: PathBuf,
+    events: EventSink,
+    cancellation: CancellationToken,
+    stop: CancellationToken,
+) {
+    let mut previous_bytes = directory_bytes(&staging);
+    let mut previous_time = Instant::now();
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => break,
+            () = stop.cancelled() => break,
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+        let now = Instant::now();
+        let downloaded_bytes = directory_bytes(&staging);
+        if downloaded_bytes == previous_bytes {
+            previous_time = now;
+            continue;
+        }
+        let elapsed = now.duration_since(previous_time).as_secs_f64();
+        let speed = (downloaded_bytes.saturating_sub(previous_bytes) as f64 / elapsed.max(0.001))
+            .round() as u64;
+        (events)(JobEvent::Progress {
+            id: job_id,
+            downloaded_bytes,
+            total_bytes: None,
+            speed_bytes_per_second: Some(speed),
+        });
+        previous_bytes = downloaded_bytes;
+        previous_time = now;
+    }
+}
+
+fn directory_bytes(root: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .map(|path| match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                directory_bytes(&path)
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 impl BuiltinCliAdapter {

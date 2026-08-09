@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import * as m from "./lib/paraglide/messages.js";
@@ -7,6 +8,7 @@
   import { localeMetadata } from "./lib/locales.js";
   import type { AppInfo } from "./lib/bindings/AppInfo.js";
   import type { JobSnapshot } from "./lib/bindings/JobSnapshot.js";
+  import type { JobEvent } from "./lib/bindings/JobEvent.js";
   import type { JobState } from "./lib/bindings/JobState.js";
   import type { RouteDecision } from "./lib/bindings/RouteDecision.js";
   import type { SourceKind } from "./lib/bindings/SourceKind.js";
@@ -28,23 +30,61 @@
   const isBetaLocale = $derived(localeMetadata[currentLocale].review === "beta");
   const direction = $derived(localeMetadata[currentLocale].direction);
 
-  onMount(async () => {
+  onMount(() => {
     updateDocumentLanguage();
     if (!hasDesktopBackend) {
       notice = m.backend_unavailable();
       return;
     }
-    try {
-      [appInfo, jobs] = await Promise.all([
-        invoke<AppInfo>("get_app_info"),
-        invoke<JobSnapshot[]>("list_jobs"),
-      ]);
-      await invoke("acknowledge_ui_ready");
-      await refreshPacks();
-    } catch (reason) {
-      error = readableError(reason);
-    }
+    let active = { value: true };
+    let unlisten = { value: undefined as UnlistenFn | undefined };
+    void (async () => {
+      try {
+        unlisten.value = await listen<JobEvent>("job-event", ({ payload }) => {
+          if (active.value) applyJobEvent(payload);
+        });
+        [appInfo, jobs] = await Promise.all([
+          invoke<AppInfo>("get_app_info"),
+          invoke<JobSnapshot[]>("list_jobs"),
+        ]);
+        await invoke("acknowledge_ui_ready");
+        await refreshPacks();
+      } catch (reason) {
+        error = readableError(reason);
+      }
+    })();
+    return () => {
+      active.value = false;
+      unlisten.value?.();
+    };
   });
+
+  function applyJobEvent(event: JobEvent): void {
+    if (event.type === "removed") {
+      jobs = jobs.filter((job) => job.id !== event.id);
+      return;
+    }
+    if (event.type === "progress") {
+      jobs = jobs.map((job) => job.id === event.id ? {
+        ...job,
+        downloaded_bytes: event.downloaded_bytes,
+        total_bytes: event.total_bytes,
+        speed_bytes_per_second: event.speed_bytes_per_second,
+        progress: event.total_bytes && event.total_bytes > 0
+          ? Math.min(1, event.downloaded_bytes / event.total_bytes)
+          : job.progress,
+      } : job);
+      return;
+    }
+    void refreshJobs().catch((reason) => {
+      error = readableError(reason);
+    });
+  }
+
+  async function refreshJobs(): Promise<void> {
+    if (!hasDesktopBackend) return;
+    jobs = await invoke<JobSnapshot[]>("list_jobs");
+  }
 
   function updateDocumentLanguage(): void {
     document.documentElement.lang = currentLocale;
@@ -322,6 +362,16 @@
                 <p>{job.plan ? kindLabel(job.plan.source_kind) : m.status_probing()}</p>
                 {#if job.plan?.required_packs.length}
                   <small>{m.required_packs({ packs: job.plan.required_packs.join(", ") })}</small>
+                {/if}
+                {#if job.downloaded_bytes > 0}
+                  <div class="job-progress" aria-hidden="true">
+                    <span style:width={`${Math.max(0, Math.min(100, job.progress * 100))}%`}></span>
+                  </div>
+                  <small>
+                    {formatBytes(job.downloaded_bytes)}
+                    {#if job.total_bytes} / {formatBytes(job.total_bytes)}{/if}
+                    {#if job.speed_bytes_per_second} · {formatBytes(job.speed_bytes_per_second)}/s{/if}
+                  </small>
                 {/if}
               </div>
               <span class="state-chip">{stateLabel(job.state)}</span>
