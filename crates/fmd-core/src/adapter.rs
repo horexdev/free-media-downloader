@@ -331,7 +331,7 @@ impl EngineAdapter for BuiltinCliAdapter {
             .supervisor
             .run(spec, cancellation.clone())
             .await
-            .map_err(|error| internal(error.to_string()))?;
+            .map_err(process_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -360,7 +360,7 @@ impl EngineAdapter for BuiltinCliAdapter {
             .supervisor
             .run(spec, cancellation.clone())
             .await
-            .map_err(|error| internal(error.to_string()))?;
+            .map_err(process_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -394,7 +394,7 @@ impl EngineAdapter for BuiltinCliAdapter {
             .supervisor
             .run(ProcessSpec::cli(command), cancellation.clone())
             .await
-            .map_err(|error| internal(error.to_string()))?;
+            .map_err(process_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -587,7 +587,7 @@ impl BuiltinCliAdapter {
             .supervisor
             .run(spec, cancellation.clone())
             .await
-            .map_err(|error| internal(error.to_string()))?;
+            .map_err(process_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
@@ -685,6 +685,19 @@ fn internal(diagnostic: String) -> EngineFailure {
         code: "engine.internal".into(),
         retry_after_seconds: None,
         diagnostic,
+    }
+}
+
+fn process_failure(error: CoreError) -> EngineFailure {
+    if matches!(error, CoreError::ProcessTimedOut) {
+        EngineFailure {
+            kind: EngineErrorKind::Transient,
+            code: "engine.timed_out".into(),
+            retry_after_seconds: None,
+            diagnostic: error.to_string(),
+        }
+    } else {
+        internal(error.to_string())
     }
 }
 
