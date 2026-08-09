@@ -3,15 +3,17 @@
   "version": "9.0.0",
   "component": "ffmpeg",
   "configure": [
-    "--disable-debug", "--disable-doc", "--disable-gpl", "--disable-nonfree",
+    "--disable-everything", "--disable-debug", "--disable-doc", "--disable-gpl", "--disable-nonfree",
     "--disable-programs", "--enable-ffmpeg", "--enable-ffprobe",
-    "--enable-protocol=file,http,https,tcp,tls,udp,crypto",
-    "--enable-demuxer=mov,matroska,webm,hls,dash,mpegts,mp3,ogg,wav,flac",
-    "--enable-muxer=mp4,matroska,webm,mpegts,mp3,ogg,wav,flac",
-    "--enable-decoder=aac,opus,vorbis,mp3,flac,h264,hevc,av1,vp8,vp9",
+    "--enable-protocol=file,pipe,http,https,tcp,tls,udp,crypto,concat,data",
+    "--enable-demuxer=aac,concat,dash,flac,hls,image2,matroska,mov,mp3,mpegts,ogg,srt,wav,webvtt",
+    "--enable-muxer=adts,flac,hls,matroska,mov,mp3,mpegts,null,ogg,segment,wav,webm,webvtt",
+    "--enable-decoder=aac,opus,vorbis,mp3,flac,h264,hevc,av1,vp8,vp9,mjpeg,png,pcm_s16le,ass,srt,webvtt",
     "--enable-encoder=aac,opus,vorbis,flac,pcm_s16le",
-    "--enable-filter=aresample,scale,format,aformat"
+    "--enable-filter=aresample,scale,format,aformat,null,anull",
+    "--enable-bsf=aac_adtstoasc,extract_extradata,h264_mp4toannexb,hevc_mp4toannexb,vp9_superframe"
   ],
   "forbiddenConfigureTokens": ["--enable-gpl", "--enable-nonfree"],
+  "sourceDateEpoch": 1785792082,
   "sizeBudget": 57671680
 }

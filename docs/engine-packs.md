@@ -53,3 +53,15 @@ The `Engine packs` workflow runs this process on Windows, macOS, and Linux for x
 Its archives are short-lived, explicitly unsigned CI artifacts. They are not eligible for a public
 release until platform signing, notarization where applicable, and production TUF metadata have
 completed.
+
+## ffmpeg-standard source verification
+
+FFmpeg is built from the official `9.0` source tarball rather than a third-party binary archive.
+Before a native build starts, `verify-ffmpeg-source.mjs` enforces the pinned tarball, detached
+signature, release-key hash, and exact release-key fingerprint in an isolated keyring. Downloads
+are HTTPS-only, origin-restricted, retried at most three times, and capped at 64 MiB.
+
+The current workflow also performs unsigned native build smoke tests for Linux and macOS on x64 and
+ARM64. Linux links a separately verified static OpenSSL build; macOS must select SecureTransport.
+The build rejects GPL/nonfree configuration and unexpected runtime TLS dependencies. Windows native
+builds and final `ffmpeg-standard` pack assembly remain required before this pack is runnable.

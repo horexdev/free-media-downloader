@@ -17,6 +17,87 @@ permissions:
   contents: read
 
 jobs:
+  ffmpeg-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Verify signed FFmpeg source
+        run: >-
+          node scripts/packs/verify-ffmpeg-source.mjs
+          --work "${{ runner.temp }}/ffmpeg-source"
+          --gpg gpg
+      - name: Verify signed OpenSSL source
+        run: >-
+          node scripts/packs/verify-ffmpeg-source.mjs
+          --component openssl
+          --work "${{ runner.temp }}/openssl-source"
+          --gpg gpg
+
+  ffmpeg-unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: macos-x64
+            runner: macos-15-intel
+          - target: macos-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Verify signed FFmpeg source
+        run: >-
+          node scripts/packs/verify-ffmpeg-source.mjs
+          --work "${{ runner.temp }}/ffmpeg-input"
+          --gpg gpg
+      - name: Verify signed OpenSSL source
+        if: startsWith(matrix.target, 'linux-')
+        run: >-
+          node scripts/packs/verify-ffmpeg-source.mjs
+          --component openssl
+          --work "${{ runner.temp }}/openssl-input"
+          --gpg gpg
+      - name: Build Linux binaries
+        if: startsWith(matrix.target, 'linux-')
+        shell: bash
+        env:
+          FMD_BUILD_JOBS: "2"
+        run: >-
+          bash scripts/packs/build-ffmpeg-standard.sh
+          "${{ matrix.target }}"
+          "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz"
+          "${{ runner.temp }}/ffmpeg-build"
+          "${{ runner.temp }}/ffmpeg-output"
+          "${{ runner.temp }}/openssl-input/openssl-3.5.7.tar.gz"
+      - name: Build macOS binaries
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        env:
+          FMD_BUILD_JOBS: "2"
+        run: >-
+          bash scripts/packs/build-ffmpeg-standard.sh
+          "${{ matrix.target }}"
+          "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz"
+          "${{ runner.temp }}/ffmpeg-build"
+          "${{ runner.temp }}/ffmpeg-output"
+      - name: Upload unsigned CI binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-ffmpeg-standard-${{ matrix.target }}
+          path: ${{ runner.temp }}/ffmpeg-output/
+          if-no-files-found: error
+          retention-days: 7
+
   video-core:
     strategy:
       fail-fast: false

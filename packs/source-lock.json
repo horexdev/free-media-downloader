@@ -7,7 +7,27 @@
       "tag": "n9.0",
       "tagObject": "5b9252abfe2fda0ccb71ed45cd7a954cc45d2b6f",
       "commit": "d32b387f2b0a484599d4587d651891f0c63c4238",
-      "signatureRequired": true
+      "signatureRequired": true,
+      "binaryLicense": "LGPL-2.1-or-later",
+      "sourceDistribution": {
+        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz",
+        "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+      },
+      "releaseVerification": {
+        "signature": {
+          "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz.asc",
+          "sha256": "f9607bb4d90bbaeff196318a55547da66c9f5921dad39b1c49b7544286e4876c"
+        },
+        "publicKey": {
+          "url": "https://ffmpeg.org/ffmpeg-devel.asc",
+          "sha256": "397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5",
+          "fingerprint": "FCF986EA15E6E293A5644F10B4322F04D67658D8"
+        }
+      },
+      "licenseFiles": [
+        { "path": "LICENSE.md", "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af" },
+        { "path": "COPYING.LGPLv2.1", "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30" }
+      ]
     },
     "yt-dlp": {
       "version": "2026.07.04",
@@ -129,7 +149,36 @@
         "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8"
       ]
     },
-    "openssl": { "version": "3.5.7", "source": "https://github.com/openssl/openssl.git", "tag": "openssl-3.5.7", "commit": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e", "signatureRequired": true },
+    "openssl": {
+      "version": "3.5.7",
+      "source": "https://github.com/openssl/openssl.git",
+      "tag": "openssl-3.5.7",
+      "commit": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "signatureRequired": true,
+      "binaryLicense": "Apache-2.0",
+      "sourceDistribution": {
+        "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+        "sha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+      },
+      "releaseVerification": {
+        "signature": {
+          "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz.asc",
+          "sha256": "d3d082bee3f658c31db53af625eceecf29d777c7010394bed5787ebcc98abdf2"
+        },
+        "checksum": {
+          "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz.sha256",
+          "sha256": "b1c0f60b8f4682d4a3d36cbbd7288e34483a52ef2ca7a9a04096e809a257b414"
+        },
+        "publicKey": {
+          "url": "https://mirror.openssl-library.org/source/pubkeys.asc",
+          "sha256": "56e106cd1c44bdb117aec24795f6dfbecaa9bfa0a2901b85331f0059aad16d53",
+          "fingerprint": "BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"
+        }
+      },
+      "licenseFiles": [
+        { "path": "LICENSE.txt", "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a" }
+      ]
+    },
     "nghttp2": { "version": "1.70.0", "source": "https://github.com/nghttp2/nghttp2.git", "tag": "v1.70.0", "commit": "85e300c79fb6dbcfa9c1013215c8710c1c2cd3d2", "signatureRequired": true },
     "zlib": { "version": "1.3.2", "source": "https://github.com/madler/zlib.git", "tag": "v1.3.2", "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498", "signatureRequired": true }
   },
