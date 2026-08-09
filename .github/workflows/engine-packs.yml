@@ -67,6 +67,17 @@ jobs:
           --component openssl
           --work "${{ runner.temp }}/openssl-input"
           --gpg gpg
+      - name: Install Linux x64 assembler
+        if: matrix.target == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nasm
+          nasm -v
+      - name: Install macOS x64 assembler
+        if: matrix.target == 'macos-x64'
+        run: |
+          command -v nasm >/dev/null || brew install nasm
+          nasm -v
       - name: Build Linux binaries
         if: startsWith(matrix.target, 'linux-')
         shell: bash

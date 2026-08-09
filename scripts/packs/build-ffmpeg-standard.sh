@@ -34,6 +34,10 @@ esac
 
 jobs=${FMD_BUILD_JOBS:-2}
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "FMD_BUILD_JOBS must be a positive integer" >&2; exit 1; }
+if [[ "$target" == *-x64 ]]; then
+  command -v nasm >/dev/null || { echo "nasm is required for optimized x64 builds" >&2; exit 1; }
+  nasm -v
+fi
 export SOURCE_DATE_EPOCH=1785792082
 export ZERO_AR_DATE=1
 export LC_ALL=C
@@ -119,7 +123,12 @@ if [[ "$target" == linux-* ]]; then
     exit 1
   fi
 else
-  if otool -L "$output_dir/ffmpeg" | tail -n +2 | grep -Ev '^\s*/(System|usr/lib)/' | grep -q .; then
+  macos_dependencies=$(otool -L "$output_dir/ffmpeg" | tail -n +2)
+  printf '%s\n' "$macos_dependencies"
+  unexpected_dependencies=$(printf '%s\n' "$macos_dependencies" |
+    awk '!/^[[:space:]]*\/(System|usr\/lib)\// { print }')
+  if [[ -n "$unexpected_dependencies" ]]; then
+    printf 'Unexpected dependencies:\n%s\n' "$unexpected_dependencies" >&2
     echo "macOS FFmpeg retains a non-system runtime dependency" >&2
     exit 1
   fi
