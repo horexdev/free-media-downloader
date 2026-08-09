@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
@@ -7,6 +9,8 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
+use unicode_normalization::UnicodeNormalization;
+use url::Url;
 
 use crate::error::CoreError;
 
@@ -70,7 +74,7 @@ impl FromStr for TargetId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum EngineCapability {
@@ -179,6 +183,28 @@ pub struct PackManifestV1 {
 }
 
 impl PackManifestV1 {
+    #[must_use]
+    pub fn license_digest(&self) -> String {
+        let mut digest = Sha256::new();
+        for component in &self.components {
+            digest.update(component.name.as_bytes());
+            digest.update([0]);
+            digest.update(component.license_id.as_bytes());
+            digest.update([0xff]);
+        }
+        for file in self
+            .files
+            .iter()
+            .filter(|file| matches!(file.role, PackFileRole::License))
+        {
+            digest.update(file.path.as_bytes());
+            digest.update([0]);
+            digest.update(file.sha256.as_bytes());
+            digest.update([0xff]);
+        }
+        format!("{:x}", digest.finalize())
+    }
+
     pub fn validate(&self, core_api: u32, expected_target: TargetId) -> Result<(), CoreError> {
         if self.schema_version != PACK_MANIFEST_SCHEMA_VERSION {
             return Err(CoreError::SupplyChain(
@@ -201,40 +227,144 @@ impl PackManifestV1 {
         if self.security_sequence == 0 || self.engines.is_empty() || self.files.is_empty() {
             return Err(CoreError::SupplyChain("pack manifest is incomplete".into()));
         }
+        if self.core_api_min == 0 || self.core_api_min > self.core_api_max {
+            return Err(CoreError::SupplyChain(
+                "pack core API range is invalid".into(),
+            ));
+        }
 
         let mut normalized_paths = BTreeSet::new();
+        let mut files_by_path = BTreeMap::new();
         for file in &self.files {
             validate_relative_path(&file.path)?;
             validate_digest(&file.sha256)?;
-            let normalized = file.path.replace('\\', "/").to_lowercase();
+            let normalized = collision_key(&file.path);
             if !normalized_paths.insert(normalized) {
                 return Err(CoreError::SupplyChain(
                     "pack contains colliding file paths".into(),
                 ));
             }
+            if file.executable != matches!(file.role, PackFileRole::Executable) {
+                return Err(CoreError::SupplyChain(
+                    "pack executable flag does not match file role".into(),
+                ));
+            }
+            files_by_path.insert(file.path.as_str(), file);
         }
+        let mut engine_ids = BTreeSet::new();
         for engine in &self.engines {
             validate_component(&engine.id)?;
+            if !engine_ids.insert(engine.id.as_str()) {
+                return Err(CoreError::SupplyChain(
+                    "pack contains duplicate engine identifiers".into(),
+                ));
+            }
             validate_relative_path(&engine.entrypoint)?;
             if engine.adapter_api != crate::ADAPTER_API_VERSION {
                 return Err(CoreError::SupplyChain(
                     "engine adapter API is incompatible".into(),
                 ));
             }
+            if !files_by_path
+                .get(engine.entrypoint.as_str())
+                .is_some_and(|file| file.executable)
+            {
+                return Err(CoreError::SupplyChain(
+                    "engine entrypoint is not a declared executable".into(),
+                ));
+            }
+            if engine.capabilities.is_empty()
+                || engine.capabilities.iter().collect::<BTreeSet<_>>().len()
+                    != engine.capabilities.len()
+            {
+                return Err(CoreError::SupplyChain(
+                    "engine capabilities are empty or duplicated".into(),
+                ));
+            }
             for path in engine.companions.values() {
                 validate_relative_path(path)?;
+                if !files_by_path.contains_key(path.as_str()) {
+                    return Err(CoreError::SupplyChain(
+                        "engine companion is not declared in the payload".into(),
+                    ));
+                }
             }
         }
+        let mut dependency_ids = BTreeSet::new();
         for dependency in &self.dependencies {
             validate_component(&dependency.pack_id)?;
+            if dependency.pack_id == self.id || !dependency_ids.insert(dependency.pack_id.as_str())
+            {
+                return Err(CoreError::SupplyChain(
+                    "pack dependency is self-referential or duplicated".into(),
+                ));
+            }
             VersionReq::parse(&dependency.version_req).map_err(|error| {
                 CoreError::SupplyChain(format!("invalid dependency requirement: {error}"))
             })?;
+        }
+        let mut component_names = BTreeSet::new();
+        for component in &self.components {
+            validate_component(&component.name)?;
+            if !component_names.insert(component.name.as_str())
+                || component.version.is_empty()
+                || component.source_revision.is_empty()
+                || component.license_id.is_empty()
+            {
+                return Err(CoreError::SupplyChain(
+                    "upstream component metadata is incomplete or duplicated".into(),
+                ));
+            }
+            let source_url = Url::parse(&component.source_url)
+                .map_err(|_| CoreError::SupplyChain("component source URL is invalid".into()))?;
+            if source_url.scheme() != "https" || source_url.host_str().is_none() {
+                return Err(CoreError::SupplyChain(
+                    "component source URL must use HTTPS".into(),
+                ));
+            }
+            validate_digest(&component.source_sha256)?;
+            if let Some(original) = &component.original_sha256 {
+                validate_digest(original)?;
+            }
+        }
+        let mut tested_engines = BTreeSet::new();
+        for test in &self.self_tests {
+            let engine = self
+                .engines
+                .iter()
+                .find(|engine| engine.id == test.engine_id)
+                .ok_or_else(|| CoreError::SupplyChain("self-test engine is unknown".into()))?;
+            if !tested_engines.insert(test.engine_id.as_str())
+                || test.expected_version != engine.version
+                || !(1..=300).contains(&test.timeout_seconds)
+            {
+                return Err(CoreError::SupplyChain(
+                    "pack self-test is duplicated or inconsistent".into(),
+                ));
+            }
+        }
+        if tested_engines.len() != self.engines.len() {
+            return Err(CoreError::SupplyChain(
+                "every engine must have an exact version self-test".into(),
+            ));
         }
         Ok(())
     }
 
     pub fn verify_payload(&self, root: &Path) -> Result<(), CoreError> {
+        let expected = self
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file))
+            .collect::<BTreeMap<_, _>>();
+        let mut actual = BTreeSet::new();
+        collect_payload_paths(root, root, &mut actual)?;
+        let expected_paths = expected.keys().cloned().collect::<BTreeSet<_>>();
+        if actual != expected_paths {
+            return Err(CoreError::SupplyChain(
+                "pack payload contains missing or undeclared files".into(),
+            ));
+        }
         for file in &self.files {
             let path = root.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
             let metadata = std::fs::symlink_metadata(&path)?;
@@ -244,7 +374,7 @@ impl PackManifestV1 {
                     file.path
                 )));
             }
-            let actual = format!("{:x}", Sha256::digest(std::fs::read(&path)?));
+            let actual = hash_file(&path)?;
             if !constant_time_hex_eq(&actual, &file.sha256) {
                 return Err(CoreError::SupplyChain(format!(
                     "pack file hash mismatch: {}",
@@ -297,7 +427,9 @@ pub fn validate_relative_path(value: &str) -> Result<(), CoreError> {
         || value.len() > 512
         || value.contains('\0')
         || value.contains(':')
+        || value.contains('\\')
         || value.ends_with(['.', ' '])
+        || value.nfc().collect::<String>() != value
     {
         return Err(CoreError::SupplyChain("pack path is unsafe".into()));
     }
@@ -335,6 +467,67 @@ pub fn validate_relative_path(value: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+pub fn collision_key(value: &str) -> String {
+    value.nfc().flat_map(char::to_lowercase).collect()
+}
+
+fn collect_payload_paths(
+    root: &Path,
+    directory: &Path,
+    paths: &mut BTreeSet<String>,
+) -> Result<(), CoreError> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(CoreError::SupplyChain(
+                "links are forbidden in pack payloads".into(),
+            ));
+        }
+        if metadata.is_dir() {
+            collect_payload_paths(root, &path, paths)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| CoreError::SupplyChain("pack path escaped its root".into()))?;
+            let normalized = relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            if normalized == "manifest.json" {
+                continue;
+            }
+            validate_relative_path(&normalized)?;
+            if !paths.insert(normalized) {
+                return Err(CoreError::SupplyChain(
+                    "pack contains duplicate payload paths".into(),
+                ));
+            }
+        } else {
+            return Err(CoreError::SupplyChain(
+                "special files are forbidden in pack payloads".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hash_file(path: &Path) -> Result<String, CoreError> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 fn validate_digest(value: &str) -> Result<(), CoreError> {
     if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(())
@@ -358,13 +551,51 @@ fn constant_time_hex_eq(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn rejects_unsafe_pack_paths() {
-        for value in ["../escape", "C:/escape", "bin/CON", "bin/file. "] {
+        for value in [
+            "../escape",
+            "C:/escape",
+            "bin/CON",
+            "bin/file. ",
+            "bin\\tool",
+            "resources/e\u{301}.txt",
+        ] {
             assert!(validate_relative_path(value).is_err(), "{value}");
         }
         assert!(validate_relative_path("bin/yt-dlp.exe").is_ok());
+        assert!(validate_relative_path("resources/é.txt").is_ok());
+    }
+
+    #[test]
+    fn payload_verification_rejects_undeclared_files() {
+        let temporary = tempdir().unwrap();
+        let declared_path = temporary.path().join("declared.txt");
+        std::fs::write(&declared_path, b"declared").unwrap();
+        std::fs::write(temporary.path().join("extra.txt"), b"extra").unwrap();
+        let manifest = PackManifestV1 {
+            schema_version: PACK_MANIFEST_SCHEMA_VERSION,
+            id: "test-pack".into(),
+            version: "1.0.0".into(),
+            target: TargetId::current().unwrap(),
+            core_api_min: 1,
+            core_api_max: 1,
+            security_sequence: 1,
+            dependencies: Vec::new(),
+            engines: Vec::new(),
+            components: Vec::new(),
+            files: vec![PackFile {
+                path: "declared.txt".into(),
+                size: 8,
+                sha256: format!("{:x}", Sha256::digest(b"declared")),
+                role: PackFileRole::Resource,
+                executable: false,
+            }],
+            self_tests: Vec::new(),
+        };
+        assert!(manifest.verify_payload(temporary.path()).is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fmd_core::{
     ApiError, BuiltinCliAdapter, CoreError, EngineAdapter, EngineErrorKind, ExtractionLimits,
     InputSource, InstalledEngine, JobExecutor, JobId, JobScheduler, JobSnapshot, JobSpec, JobStore,
-    PackInstaller, PackLayout, RouteDecision, Router, TargetId, TufRepository,
+    PackConsentRecord, PackInstaller, PackLayout, RouteDecision, Router, TargetId, TufRepository,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -38,6 +38,7 @@ struct AvailablePack {
     version: String,
     target: String,
     security_sequence: u64,
+    size: u64,
     installed: bool,
 }
 
@@ -93,6 +94,7 @@ impl PackService {
                 version: target.pack_version,
                 target: target.target.to_string(),
                 security_sequence: target.security_sequence,
+                size: target.length,
             })
             .collect::<Vec<_>>();
         packs.sort_by(|left, right| {
@@ -132,7 +134,7 @@ impl PackService {
             .map_err(CoreError::from)
             .map_err(ApiError::from)?;
         let archive = staging.join(format!("{}.zip", Uuid::new_v4()));
-        repository
+        let download_result = repository
             .download_external_target(
                 &authorization,
                 &archive,
@@ -142,17 +144,19 @@ impl PackService {
                     "release-assets.githubusercontent.com",
                 ],
             )
-            .await
-            .map_err(ApiError::from)?;
+            .await;
+        if let Err(error) = download_result {
+            let _ = fs::remove_file(&archive);
+            return Err(ApiError::from(error));
+        }
         let installer = PackInstaller::new(
             self.layout.clone(),
             current_target,
             ExtractionLimits::default(),
         );
-        let manifest = installer
-            .install_archive(&archive)
-            .map_err(ApiError::from)?;
+        let install_result = installer.install_authorized_archive(&archive, &authorization);
         let _ = fs::remove_file(&archive);
+        let manifest = install_result.map_err(ApiError::from)?;
         if manifest.id != authorization.pack_id
             || manifest.version != authorization.pack_version
             || manifest.security_sequence != authorization.security_sequence
@@ -179,18 +183,26 @@ impl PackService {
                 .await
                 .map_err(|failure| failure.api_error())?;
         }
-        self.store
-            .advance_pack_security_high_water(pack_id, manifest.security_sequence)
-            .map_err(ApiError::from)?;
         let pointer = self.layout.activate(&manifest).map_err(ApiError::from)?;
         self.store
-            .record_pack_activation(&pointer)
+            .commit_pack_activation(&pointer)
+            .map_err(ApiError::from)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        self.store
+            .save_pack_consent(&PackConsentRecord {
+                pack_id: manifest.id.clone(),
+                manifest_sha256: pointer.manifest_sha256,
+                license_digest: manifest.license_digest(),
+                accepted_size: authorization.length,
+                auto_update: false,
+                accepted_at: now.clone(),
+                updated_at: now,
+            })
             .map_err(ApiError::from)?;
         Ok(format!("{}@{}", manifest.id, manifest.version))
     }
 
     async fn ensure(&self, pack_ids: &[String]) -> Result<(), ApiError> {
-        let available = self.available().await?;
         for pack_id in pack_ids {
             if self
                 .layout
@@ -200,12 +212,10 @@ impl PackService {
             {
                 continue;
             }
-            let target = available
-                .iter()
-                .filter(|candidate| &candidate.pack_id == pack_id)
-                .max_by_key(|candidate| candidate.security_sequence)
-                .ok_or_else(|| ApiError::new("pack.not_available", EngineErrorKind::Integrity))?;
-            self.install(pack_id, &target.target_name).await?;
+            return Err(
+                ApiError::new("pack.install_required", EngineErrorKind::Integrity)
+                    .with_arg("pack", pack_id),
+            );
         }
         Ok(())
     }
@@ -309,6 +319,11 @@ impl AppState {
         let paths = AppPaths::resolve(handle)?;
         let store = JobStore::open(&paths.data.join("fmd.db"))?;
         store.mark_active_jobs_interrupted()?;
+        let pack_layout = PackLayout::new(paths.engines.clone());
+        pack_layout.recover_staging()?;
+        for pointer in pack_layout.active_pointers()? {
+            store.commit_pack_activation(&pointer)?;
+        }
         let scheduler = JobScheduler::new(store, 2)?;
         let event_handle = handle.clone();
         let events = Arc::new(move |event| {
@@ -316,13 +331,13 @@ impl AppState {
         });
         let executor = Arc::new(JobExecutor::new(
             scheduler.clone(),
-            PackLayout::new(paths.engines.clone()),
+            pack_layout.clone(),
             paths.data.join("staging"),
             events,
         ));
         let packs = PackService {
             store: scheduler.store().clone(),
-            layout: PackLayout::new(paths.engines.clone()),
+            layout: pack_layout,
             state_root: paths.state.clone(),
             updates_root: paths.updates.clone(),
         };

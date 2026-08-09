@@ -17,6 +17,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 directories.workspace = true
 fmd-core = { path = "../crates/fmd-core" }
 serde.workspace = true
