@@ -12,6 +12,31 @@
     "yt-dlp": {
       "version": "2026.07.04",
       "signatureRequired": true,
+      "binaryLicense": "GPL-3.0-or-later",
+      "license": {
+        "spdx": "Unlicense",
+        "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.07.04/LICENSE",
+        "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+      },
+      "releaseVerification": {
+        "checksumManifest": {
+          "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/SHA2-256SUMS",
+          "sha256": "eca42575010efc77b8dc1e263c57e19c4bddc42d3e08ba789ccde72c97d48c64"
+        },
+        "signature": {
+          "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/SHA2-256SUMS.sig",
+          "sha256": "3fb88fc2f120ccae9572e5018136a25ff74954da2366936b87bd09eab2ac09c6"
+        },
+        "publicKey": {
+          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.07.04/public.key",
+          "sha256": "45d6b415928b5f3e228b461fa9e6d7eb56a824931c785ece00279a06c7a6d6e5",
+          "fingerprint": "AC0CBBE6848D6A873464AF4E57CF65933B5A7581"
+        }
+      },
+      "sourceDistribution": {
+        "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.tar.gz",
+        "sha256": "31c32457d1a573a341bb0929386c624fe47339a5338829e6e9c9454bdfa7397a"
+      },
       "assets": {
         "windows-x64": { "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe", "sha256": "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8" },
         "windows-arm64": { "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp_arm64.exe", "sha256": "1525690b037ecc0bb677e38e7147b0025179cbc9a8d0c57264e3100b18099280" },
@@ -21,15 +46,38 @@
         "linux-arm64": { "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp_linux_aarch64", "sha256": "b6ce97646773070d7a7ffd6bbbdcaecb47c48483909c54c915bf08a7a9b5e0b1" }
       }
     },
+    "yt-dlp-ejs": {
+      "version": "0.8.0",
+      "source": "https://github.com/yt-dlp/ejs.git",
+      "tag": "0.8.0",
+      "commit": "4fb477f4af56880cfd324c48bd4294a2d2294e50",
+      "sourceDistribution": {
+        "url": "https://github.com/yt-dlp/ejs/releases/download/0.8.0/yt_dlp_ejs-0.8.0.tar.gz",
+        "sha256": "d5fa1639f63b5c4af8d932495f60689d5370f1a095782c944f7f62a303eb104e"
+      },
+      "binaryLicense": "Unlicense",
+      "license": {
+        "spdx": "Unlicense",
+        "url": "https://raw.githubusercontent.com/yt-dlp/ejs/0.8.0/LICENSE",
+        "sha256": "b5065838cbac452dfc855ba6e6e031481ad2c68406f70d21ead9321374653e6c"
+      },
+      "embeddedIn": "yt-dlp"
+    },
     "deno": {
       "version": "2.9.5",
+      "binaryLicense": "MIT",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://raw.githubusercontent.com/denoland/deno/v2.9.5/LICENSE.md",
+        "sha256": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588"
+      },
       "assets": {
-        "windows-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-pc-windows-msvc.zip", "sha256": "171efab55ac6b9881fd53ee4c20f8bf3bb1340ffc618483746909014db12216a" },
-        "windows-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-pc-windows-msvc.zip", "sha256": "73f20b3566a0a6e3f6912fd7bf5b3a7ccd04d68414baedea3b397437bdec6472" },
-        "macos-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-apple-darwin.zip", "sha256": "c1b8b89a81e91b2a8b3f96def3195d08cfe3a105651da7908d53061f7140510d" },
-        "macos-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-apple-darwin.zip", "sha256": "b796aadd131f6930560c1ee040cf0d6f53933fbb987464e9ff46bd7ea4830615" },
-        "linux-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip", "sha256": "8b010a3b1a4a0188a67cdb8a7a27348b2a501af78aec7fc74f2ace167368d530" },
-        "linux-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-unknown-linux-gnu.zip", "sha256": "6b7cae3a8fc4385a59dea3146fcb8bad7fea4230e0ad36a8c692afacbc254be0" }
+        "windows-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-pc-windows-msvc.zip", "sha256": "171efab55ac6b9881fd53ee4c20f8bf3bb1340ffc618483746909014db12216a", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-pc-windows-msvc.zip.sha256sum", "checksumSha256": "8616cbda331796828c738f61635a8cb988c9f4fe8b30cd619a64ce47b2e8e993" },
+        "windows-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-pc-windows-msvc.zip", "sha256": "73f20b3566a0a6e3f6912fd7bf5b3a7ccd04d68414baedea3b397437bdec6472", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-pc-windows-msvc.zip.sha256sum", "checksumSha256": "52b1f19058ec51a97b414dd902a1cd93c760553a53397eed2c4296e4d5346edf" },
+        "macos-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-apple-darwin.zip", "sha256": "c1b8b89a81e91b2a8b3f96def3195d08cfe3a105651da7908d53061f7140510d", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-apple-darwin.zip.sha256sum", "checksumSha256": "b425c9b939fc62379c08ed653aa8e6e1dbac6045a0c8e3ace0ecef39be59c120" },
+        "macos-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-apple-darwin.zip", "sha256": "b796aadd131f6930560c1ee040cf0d6f53933fbb987464e9ff46bd7ea4830615", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-apple-darwin.zip.sha256sum", "checksumSha256": "adf0a06eb160ec678f8adbab52cefea5f4ffc36a64b1adea542c76343a607d9e" },
+        "linux-x64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip", "sha256": "8b010a3b1a4a0188a67cdb8a7a27348b2a501af78aec7fc74f2ace167368d530", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip.sha256sum", "checksumSha256": "85927f8582ba5ff5707bdd1ec1232e62131a88fd4d6a1b466636a0a10dd29576" },
+        "linux-arm64": { "url": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-unknown-linux-gnu.zip", "sha256": "6b7cae3a8fc4385a59dea3146fcb8bad7fea4230e0ad36a8c692afacbc254be0", "checksumUrl": "https://github.com/denoland/deno/releases/download/v2.9.5/deno-aarch64-unknown-linux-gnu.zip.sha256sum", "checksumSha256": "a32bfaa305e0e762e503e216bc3db0bac0e7f4ca4ddf1d231ec31411c9475b87" }
       }
     },
     "streamlink": {
@@ -84,5 +132,11 @@
     "openssl": { "version": "3.5.7", "source": "https://github.com/openssl/openssl.git", "tag": "openssl-3.5.7", "commit": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e", "signatureRequired": true },
     "nghttp2": { "version": "1.70.0", "source": "https://github.com/nghttp2/nghttp2.git", "tag": "v1.70.0", "commit": "85e300c79fb6dbcfa9c1013215c8710c1c2cd3d2", "signatureRequired": true },
     "zlib": { "version": "1.3.2", "source": "https://github.com/madler/zlib.git", "tag": "v1.3.2", "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498", "signatureRequired": true }
+  },
+  "licenseTexts": {
+    "GPL-3.0-or-later": {
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.28.0/text/GPL-3.0-or-later.txt",
+      "sha256": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0"
+    }
   }
 }

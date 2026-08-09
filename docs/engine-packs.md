@@ -28,3 +28,28 @@ Core and engine metadata use separate TUF trust roots. Metadata expiry, target l
 monotonic security sequences, and compatible core API ranges are verified before extraction.
 Versions are immutable. A running job retains a lease on its selected version, while an update is
 activated only for new jobs.
+
+## video-core assembly
+
+`video-core` is assembled natively on each of the six supported targets. The assembler:
+
+- downloads only HTTPS assets and follows redirects only across an explicit host allowlist;
+- checks the pinned SHA-256 for yt-dlp, Deno, license texts, and checksum sidecars;
+- verifies the signed yt-dlp checksum manifest against the pinned signing-key fingerprint;
+- records bundled yt-dlp EJS as a separate `0.8.0` component in the manifest and SBOM;
+- extracts only the exact Deno executable from its ZIP, rejecting unsafe or duplicate entries;
+- runs yt-dlp and Deno version smoke tests without inheriting `PATH`;
+- writes licenses, corresponding-source information, SPDX 2.3 SBOM, and in-toto provenance;
+- creates the archive twice and rejects the build unless the SHA-256 values are identical.
+
+The native command is:
+
+```text
+node scripts/packs/assemble-video-core.mjs --target <target> --work <empty-dir> \
+  --out <archive.zip> --packager <fmd-packager> --gpg <gpg>
+```
+
+The `Engine packs` workflow runs this process on Windows, macOS, and Linux for x64 and ARM64.
+Its archives are short-lived, explicitly unsigned CI artifacts. They are not eligible for a public
+release until platform signing, notarization where applicable, and production TUF metadata have
+completed.

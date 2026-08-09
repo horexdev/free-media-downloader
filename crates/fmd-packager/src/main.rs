@@ -1,4 +1,5 @@
-use std::fs::{File, OpenOptions};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -15,9 +16,18 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    match arguments.first().and_then(|value| value.to_str()) {
+        Some("package") => package(&arguments[1..]),
+        Some("extract-zip-entry") => extract_zip_entry(&arguments[1..]),
+        _ => package(&arguments),
+    }
+}
+
+fn package(arguments: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
     if arguments.len() != 3 {
         return Err(
-            "usage: fmd-packager <manifest-template.json> <payload-directory> <output.zip>".into(),
+            "usage: fmd-packager package <manifest-template.json> <payload-directory> <output.zip>"
+                .into(),
         );
     }
     let template = PathBuf::from(&arguments[0]);
@@ -45,6 +55,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut archive = zip::ZipWriter::new(archive_file);
     let regular = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default())
         .unix_permissions(0o644);
     archive.start_file("manifest.json", regular)?;
     archive.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
@@ -64,6 +75,64 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let file = archive.finish()?;
     file.sync_all()?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+fn extract_zip_entry(arguments: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.len() != 3 {
+        return Err(
+            "usage: fmd-packager extract-zip-entry <archive.zip> <entry-name> <output-file>".into(),
+        );
+    }
+    let archive_path = PathBuf::from(&arguments[0]);
+    let entry_name = arguments[1]
+        .to_str()
+        .ok_or("ZIP entry name must be valid UTF-8")?
+        .replace('\\', "/");
+    fmd_core::engine::validate_relative_path(&entry_name)?;
+    let output = PathBuf::from(&arguments[2]);
+    if output.exists() {
+        return Err("extraction output must not exist".into());
+    }
+
+    let mut archive = zip::ZipArchive::new(File::open(archive_path)?)?;
+    let mut matching_index = None;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        let enclosed = entry.enclosed_name().ok_or("unsafe ZIP path")?;
+        let normalized = normalized(&enclosed);
+        if normalized == entry_name {
+            if matching_index.replace(index).is_some() {
+                return Err("ZIP contains a duplicate requested entry".into());
+            }
+            if entry.is_dir() || entry.size() > 512 * 1024 * 1024 {
+                return Err("requested ZIP entry is not a bounded regular file".into());
+            }
+            if let Some(mode) = entry.unix_mode() {
+                let kind = mode & 0o170000;
+                if kind != 0 && kind != 0o100000 {
+                    return Err("requested ZIP entry is not a regular file".into());
+                }
+            }
+        }
+    }
+    let index = matching_index.ok_or("requested ZIP entry was not found")?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut entry = archive.by_index(index)?;
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)?;
+    if let Err(error) = std::io::copy(&mut entry, &mut destination) {
+        drop(destination);
+        let _ = fs::remove_file(&output);
+        return Err(error.into());
+    }
+    destination.flush()?;
+    destination.sync_all()?;
     println!("{}", output.display());
     Ok(())
 }
@@ -152,4 +221,60 @@ fn normalized(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn extracts_only_a_bounded_regular_entry() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("input.zip");
+        let output = temporary.path().join("output").join("deno");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("deno", SimpleFileOptions::default().unix_permissions(0o755))
+            .unwrap();
+        archive.write_all(b"binary").unwrap();
+        archive.finish().unwrap();
+
+        extract_zip_entry(&[
+            archive_path.into_os_string(),
+            OsString::from("deno"),
+            output.clone().into_os_string(),
+        ])
+        .unwrap();
+        assert_eq!(fs::read(output).unwrap(), b"binary");
+    }
+
+    #[test]
+    fn rejects_an_archive_with_an_unsafe_unrelated_entry() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("input.zip");
+        let output = temporary.path().join("deno");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("../escape", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"bad").unwrap();
+        archive
+            .start_file("deno", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"binary").unwrap();
+        archive.finish().unwrap();
+
+        assert!(
+            extract_zip_entry(&[
+                archive_path.into_os_string(),
+                OsString::from("deno"),
+                output.clone().into_os_string(),
+            ])
+            .is_err()
+        );
+        assert!(!output.exists());
+    }
 }
