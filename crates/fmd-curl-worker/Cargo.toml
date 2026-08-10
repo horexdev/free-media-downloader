@@ -14,7 +14,7 @@ default = []
 native-stack = []
 
 [dependencies]
-curl = { version = "0.4.50", features = ["http2", "protocol-ftp"] }
+curl = { version = "0.4.50", features = ["http2", "protocol-ftp", "static-curl"] }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true

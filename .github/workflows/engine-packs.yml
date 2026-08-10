@@ -250,9 +250,147 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  general-downloads:
+    if: github.event_name == 'workflow_dispatch' || inputs.run_packs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-2025
+            packager: target/release/fmd-packager.exe
+            worker: target/release/fmd-curl-worker.exe
+          - target: windows-arm64
+            runner: windows-11-arm
+            packager: target/release/fmd-packager.exe
+            worker: target/release/fmd-curl-worker.exe
+          - target: macos-x64
+            runner: macos-15-intel
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: macos-arm64
+            runner: macos-15
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: linux-x64
+            runner: ubuntu-24.04
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Prepare curl static prefix (Windows only)
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $urls = @{
+            "windows-x64" = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64-mingw.zip"
+            "windows-arm64" = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64a-mingw.zip"
+          }
+          $url = $urls["${{ matrix.target }}"]
+          if (-not $url) {
+            throw "Unsupported curl prefix target: ${{ matrix.target }}"
+          }
+          $archive = Join-Path "${{ runner.temp }}" "curl-static.zip"
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          $extract = Join-Path "${{ runner.temp }}" "curl-static-prefix"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $extract
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $prefix = Get-ChildItem -Path $extract -Directory -ErrorAction Stop | ForEach-Object {
+            if (Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and Test-Path (Join-Path $_.FullName "lib/libcurl.a")) {
+              $_.FullName
+            }
+          } | Select-Object -First 1
+          if (-not $prefix) {
+            $prefix = $extract
+          }
+          if (-not $prefix) {
+            throw "curl static archive is empty: $archive"
+          }
+          if (-not (Test-Path (Join-Path $prefix "include/curl/curl.h")) -or
+              -not (Test-Path (Join-Path $prefix "lib/libcurl.a"))) {
+            throw "curl static prefix is missing required headers/libs"
+          }
+          echo "FMD_CURL_STATIC_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "curl static prefix: $prefix"
+      - name: Prepare curl static prefix (Unix)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          bash scripts/packs/build-curl-static-prefix.sh \
+            "${{ matrix.target }}" \
+            "${{ runner.temp }}/curl-static-prefix"
+      - name: Install aria2 (Linux/macOS)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        run: |
+          if command -v apt-get >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends aria2
+          else
+            command -v brew >/dev/null && brew install aria2
+          fi
+          ARIA2_PATH="$(command -v aria2c || true)"
+          if [ -z "$ARIA2_PATH" ]; then
+            echo "Failed to resolve aria2c path"
+            exit 1
+          fi
+          echo "ARIA2_PATH=$ARIA2_PATH" >> "$GITHUB_ENV"
+      - name: Install aria2 (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $aria2 = (Get-Command aria2c -ErrorAction SilentlyContinue)?.Source
+          if (-not $aria2) {
+            $aria2Zip = "${{ runner.temp }}\\aria2.zip"
+            $aria2Out = "${{ runner.temp }}\\aria2-extract"
+            New-Item -ItemType Directory -Force -Path $aria2Out | Out-Null
+            Invoke-WebRequest -Uri https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip -OutFile $aria2Zip -UseBasicParsing
+            Expand-Archive -Path $aria2Zip -DestinationPath $aria2Out -Force
+            $aria2 = Get-ChildItem -Path $aria2Out -Filter aria2c.exe -Recurse -ErrorAction Stop | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $aria2) {
+            throw "aria2c binary was not found after install"
+          }
+          echo "ARIA2_PATH=$aria2" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build packager and curl worker (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        run: cargo build --locked --release -p fmd-packager -p fmd-curl-worker --features native-stack
+      - name: Build packager and curl worker (Linux/macOS)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        env:
+          FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
+        run: cargo build --locked --release -p fmd-packager -p fmd-curl-worker --features native-stack
+      - name: Assemble and smoke-test general-downloads
+        shell: pwsh
+        run: >-
+          node scripts/packs/assemble-general-downloads.mjs
+          --target "${{ matrix.target }}"
+          --work "${{ runner.temp }}/general-downloads-work"
+          --out "${{ runner.temp }}/general-downloads-${{ matrix.target }}.zip"
+          --packager "${{ matrix.packager }}"
+          --aria2 "${{ env.ARIA2_PATH }}"
+          --worker "${{ matrix.worker }}"
+          --require-sftp true
+      - name: Upload unsigned CI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-general-downloads-${{ matrix.target }}
+          path: ${{ runner.temp }}/general-downloads-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
   engine-packs-required:
     if: always()
-    needs: [ffmpeg-source, ffmpeg-unix, video-core, python-packs]
+    needs: [ffmpeg-source, ffmpeg-unix, video-core, python-packs, general-downloads]
     runs-on: ubuntu-24.04
     steps:
       - name: Require successful engine-pack checks when selected
@@ -262,13 +400,14 @@ jobs:
           FFMPEG_UNIX: ${{ needs.ffmpeg-unix.result }}
           VIDEO_CORE: ${{ needs.video-core.result }}
           PYTHON_PACKS: ${{ needs.python-packs.result }}
+          GENERAL_DOWNLOADS: ${{ needs.general-downloads.result }}
         run: |
           if [[ "$SHOULD_RUN" != "true" ]]; then
             echo "Engine-pack checks are not required for these changes."
             exit 0
           fi
 
-          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$VIDEO_CORE" "$PYTHON_PACKS"; do
+          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$VIDEO_CORE" "$PYTHON_PACKS" "$GENERAL_DOWNLOADS"; do
             if [[ "$result" != "success" ]]; then
               echo "A required engine-pack check finished with: $result"
               exit 1
