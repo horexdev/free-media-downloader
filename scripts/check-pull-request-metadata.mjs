@@ -6,7 +6,12 @@ const body = event.pull_request?.body ?? "";
 const conventional = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\((app|core|ui|engine|download|update|i18n|security|build|release|deps|docs)\))?!?: [a-z][^\r\n.]{0,70}$/;
 if (!conventional.test(title)) fail("pull request title must follow the project commit convention");
 if (title.length > 72) fail("pull request title is longer than 72 characters");
-if (!/^Summary\r?\n[\s\S]*\r?\nWhy\r?\n[\s\S]*\r?\nTesting\r?\n[\s\S]*\r?\nRisks\r?\n[\s\S]*\r?\nChecklist\r?\n/.test(body)) {
+const headings = ["Summary", "Why", "Testing", "Risks", "Checklist"];
+const normalizedBody = `\n${body.replace(/\r\n?/g, "\n")}\n`;
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const sectionPattern = (heading) => new RegExp(`(?:^|\\n)\\s*#*\\s*${escapeRegex(heading)}\\b`, "i");
+const missingSection = headings.find((heading) => !sectionPattern(heading).test(normalizedBody));
+if (missingSection) {
   fail("pull request body must contain Summary, Why, Testing, Risks, and Checklist sections");
 }
 const forbiddenSource = process.env.FORBIDDEN_METADATA_REGEX;

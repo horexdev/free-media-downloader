@@ -304,11 +304,12 @@ jobs:
           $extract = Join-Path "${{ runner.temp }}" "curl-static-prefix"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $extract
           Expand-Archive -Path $archive -DestinationPath $extract -Force
-          $prefix = Get-ChildItem -Path $extract -Directory -ErrorAction Stop | ForEach-Object {
-            if (Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and Test-Path (Join-Path $_.FullName "lib/libcurl.a")) {
-              $_.FullName
-            }
-          } | Select-Object -First 1
+          $prefix = Get-ChildItem -Path $extract -Directory -ErrorAction Stop |
+            Where-Object {
+              Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and
+              Test-Path (Join-Path $_.FullName "lib/libcurl.a")
+            } |
+            Select-Object -First 1 -ExpandProperty FullName
           if (-not $prefix) {
             $prefix = $extract
           }

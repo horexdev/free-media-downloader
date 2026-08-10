@@ -22,16 +22,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 lock_file="$repo_root/packs/source-lock.json"
 component_source() {
   local component="$1"
-  node - <<'NODE' "$lock_file" "$component"
-const fs = require("node:fs");
-const lock = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const component = lock.components[process.argv[3]];
-if (!component?.sourceDistribution?.url || !component?.sourceDistribution?.sha256) {
-  process.exit(1);
-}
-console.log(component.sourceDistribution.url);
-console.log(component.sourceDistribution.sha256);
-NODE
+  node -e "const fs = require('node:fs'); const lock = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); const c = lock.components[process.argv[2]]; if (!c?.sourceDistribution?.url || !c?.sourceDistribution?.sha256) process.exit(1); console.log(c.sourceDistribution.url); console.log(c.sourceDistribution.sha256);" \
+    "$lock_file" "$component"
 }
 
 host_os=$(uname -s)
@@ -81,7 +73,22 @@ safe_tar() {
 extract_source() {
   local component="$1"
   local marker="$2"
-  read -r url sha <<<"$(component_source "$component")"
+  if ! read -r url sha <<<"$(component_source "$component")"; then
+    echo "Failed to read locked source for ${component}" >&2
+    exit 1
+  fi
+  if [[ -z "$url" || -z "$sha" ]]; then
+    echo "Invalid source entry for component $component" >&2
+    exit 1
+  fi
+  if [[ ! "$url" =~ ^https?:// ]]; then
+    echo "Blocked unsupported curl source URL: $url" >&2
+    exit 1
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Invalid source SHA-256 for component $component: $sha" >&2
+    exit 1
+  fi
   local archive="$work_dir/$component.tar.gz"
   local unpack_dir="$work_dir/$component-src"
   mkdir -p "$work_dir" "$marker" "$unpack_dir"
