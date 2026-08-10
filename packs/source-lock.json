@@ -153,7 +153,18 @@
       "version": "1.37.0+fmd.1",
       "source": "https://github.com/aria2/aria2.git",
       "tag": "release-1.37.0",
-      "commit": "02f2d0d8472b3c38c29b4dba8c75ebd5fdd2899a"
+      "commit": "02f2d0d8472b3c38c29b4dba8c75ebd5fdd2899a",
+      "binaryLicense": "GPL-2.0-or-later",
+      "sourceDistribution": {
+        "url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2",
+        "sha256": "a75c8534902ff1a64a23d7a47c033032329002553634251a89d53a9cb8b20efa"
+      },
+      "signatureRequired": false,
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://raw.githubusercontent.com/aria2/aria2/release-1.37.0/COPYING",
+        "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+      }
     },
     "curl": {
       "version": "8.21.0",
@@ -161,17 +172,38 @@
       "tag": "curl-8_21_0",
       "tagObject": "3f00a2f6fa97f7721b65606954aac979dcb6caac",
       "commit": "68720b4837284335b2d63cb358f8f6ce65f5bc55",
-      "signatureRequired": true
+      "signatureRequired": false,
+      "binaryLicense": "curl",
+      "sourceDistribution": {
+        "url": "https://github.com/curl/curl/archive/refs/tags/curl-8_21_0.tar.gz",
+        "sha256": "ec753aa6f408a3ca9f0d6d5f7a77417aecd1544db13c03ae5d443612bf367364"
+      },
+      "license": {
+        "spdx": "curl",
+        "url": "https://raw.githubusercontent.com/curl/curl/curl-8_21_0/COPYING",
+        "sha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681"
+      }
     },
     "libssh2": {
       "version": "1.11.1+fmd.2",
       "source": "https://github.com/libssh2/libssh2.git",
       "tag": "libssh2-1.11.1",
       "baseCommit": "a312b43325e3383c865a87bb1d26cb52e3292641",
+      "binaryLicense": "BSD-3-Clause",
+      "signatureRequired": false,
       "requiredSecurityCommits": [
         "256d04b60d80bf1190e96b0ad1e91b2174d744b1",
         "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8"
-      ]
+      ],
+      "sourceDistribution": {
+        "url": "https://github.com/libssh2/libssh2/archive/refs/tags/libssh2-1.11.1.tar.gz",
+        "sha256": "82b35c61c78b475647bdc981a183c5b5ab0d979e1caee94186e8f9150f2b0d0d"
+      },
+      "license": {
+        "spdx": "BSD-3-Clause",
+        "url": "https://raw.githubusercontent.com/libssh2/libssh2/libssh2-1.11.1/COPYING",
+        "sha256": "f7f9633cf9ff2f1333f3d7ce46973a8716a4d2a2815ad56f30d437d5fea7bafe"
+      }
     },
     "openssl": {
       "version": "3.5.7",
@@ -180,6 +212,11 @@
       "commit": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
       "signatureRequired": true,
       "binaryLicense": "Apache-2.0",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.5.7/LICENSE.txt",
+        "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+      },
       "sourceDistribution": {
         "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
         "sha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
@@ -203,8 +240,40 @@
         { "path": "LICENSE.txt", "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a" }
       ]
     },
-    "nghttp2": { "version": "1.70.0", "source": "https://github.com/nghttp2/nghttp2.git", "tag": "v1.70.0", "commit": "85e300c79fb6dbcfa9c1013215c8710c1c2cd3d2", "signatureRequired": true },
-    "zlib": { "version": "1.3.2", "source": "https://github.com/madler/zlib.git", "tag": "v1.3.2", "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498", "signatureRequired": true }
+    "nghttp2": {
+      "version": "1.70.0",
+      "source": "https://github.com/nghttp2/nghttp2.git",
+      "tag": "v1.70.0",
+      "commit": "85e300c79fb6dbcfa9c1013215c8710c1c2cd3d2",
+      "signatureRequired": false,
+      "binaryLicense": "MIT",
+      "sourceDistribution": {
+        "url": "https://github.com/nghttp2/nghttp2/archive/refs/tags/v1.70.0.tar.gz",
+        "sha256": "d38d641fb3877b4847c774ad88b5f3ab70daf1ae0e616079bbeec4691186fc6a"
+      },
+      "license": {
+        "spdx": "MIT",
+        "url": "https://raw.githubusercontent.com/nghttp2/nghttp2/v1.70.0/COPYING",
+        "sha256": "6b94f3abc1aabd0c72a7c7d92a77f79dda7c8a0cb3df839a97890b4116a2de2a"
+      }
+    },
+    "zlib": {
+      "version": "1.3.2",
+      "source": "https://github.com/madler/zlib.git",
+      "tag": "v1.3.2",
+      "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498",
+      "signatureRequired": false,
+      "binaryLicense": "zlib",
+      "sourceDistribution": {
+        "url": "https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz",
+        "sha256": "b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1"
+      },
+      "license": {
+        "spdx": "zlib",
+        "url": "https://raw.githubusercontent.com/madler/zlib/v1.3.2/README",
+        "sha256": "4026d921213bb2e311d8d42b44ef53361c102d5d45ae32f93f8e52eaee8d068f"
+      }
+    }
   },
   "licenseTexts": {
     "GPL-3.0-or-later": {

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fmd_core::{
     ApiError, BuiltinCliAdapter, CoreError, EngineAdapter, EngineErrorKind, ExtractionLimits,
@@ -43,13 +44,35 @@ struct AvailablePack {
 }
 
 impl PackService {
+    fn bootstrap_trust_root(trust_root: &Path) -> Result<(), CoreError> {
+        let parent = trust_root.parent().ok_or_else(|| {
+            CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid trust root path",
+            ))
+        })?;
+        fs::create_dir_all(parent)?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| CoreError::Io(std::io::Error::other("system time is before Unix epoch")))?
+            .as_nanos();
+        let temp = trust_root.with_extension(format!("tmp.{nonce}"));
+        {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)?;
+            file.write_all(include_bytes!("../resources/tuf/engines-root.json"))?;
+            file.sync_all()?;
+        }
+        fs::rename(temp, trust_root)?;
+        Ok(())
+    }
+
     async fn repository(&self) -> Result<TufRepository, ApiError> {
         let trust_root = self.state_root.join("tuf/engines/root.json");
         if !trust_root.is_file() {
-            return Err(ApiError::new(
-                "pack.trust_root_missing",
-                EngineErrorKind::Integrity,
-            ));
+            Self::bootstrap_trust_root(&trust_root).map_err(ApiError::from)?;
         }
         let root = fs::read(trust_root)
             .map_err(CoreError::from)
@@ -514,6 +537,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn portable_marker_is_discovered_above_versioned_payload() {
@@ -526,5 +550,16 @@ mod tests {
             find_portable_root(&executable),
             Some(temporary.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn bootstrap_trust_root_creates_embedded_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let trust_root = temporary.path().join("state/tuf/engines/root.json");
+        PackService::bootstrap_trust_root(&trust_root).unwrap();
+        let bytes = std::fs::read(&trust_root).unwrap();
+        assert!(bytes.ends_with(b"}\n"));
+        assert_eq!(&bytes, include_bytes!("../resources/tuf/engines-root.json"));
+        assert!(Path::new(&trust_root).is_file());
     }
 }

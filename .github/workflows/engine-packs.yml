@@ -25,6 +25,8 @@ jobs:
       - name: Verify signed FFmpeg source
         run: >-
           node scripts/packs/verify-ffmpeg-source.mjs
+          --transport curl
+          --curl curl
           --work "${{ runner.temp }}/ffmpeg-source"
           --gpg gpg
       - name: Verify signed OpenSSL source
@@ -57,6 +59,8 @@ jobs:
       - name: Verify signed FFmpeg source
         run: >-
           node scripts/packs/verify-ffmpeg-source.mjs
+          --transport curl
+          --curl curl
           --work "${{ runner.temp }}/ffmpeg-input"
           --gpg gpg
       - name: Verify signed OpenSSL source
@@ -291,13 +295,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $urls = @{
-            "windows-x64" = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64-mingw.zip"
-            "windows-arm64" = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64a-mingw.zip"
+          $normalizedTarget = "${{ matrix.target }}".Trim().ToLowerInvariant()
+          switch ($normalizedTarget) {
+            "windows-x64" {
+              $url = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64-mingw.zip"
+            }
+            "windows-arm64" {
+              $url = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64a-mingw.zip"
+            }
+            default {
+              throw "Unsupported curl prefix target: $normalizedTarget"
+            }
           }
-          $url = $urls["${{ matrix.target }}"]
           if (-not $url) {
-            throw "Unsupported curl prefix target: ${{ matrix.target }}"
+            throw "Curl prefix URL is empty for target: $normalizedTarget"
           }
           $archive = Join-Path "${{ runner.temp }}" "curl-static.zip"
           Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
@@ -311,14 +322,20 @@ jobs:
             } |
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $prefix) {
-            $prefix = $extract
+            $prefix = Get-ChildItem -Path $extract -Recurse -Directory -Depth 3 -ErrorAction Stop |
+              Where-Object {
+                Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and
+                Test-Path (Join-Path $_.FullName "lib/libcurl.a")
+              } |
+              Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $prefix) {
-            throw "curl static archive is empty: $archive"
+            $topLevel = (Get-ChildItem -Path $extract -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName) -join ", "
+            throw "curl static prefix is missing required headers/libs after extraction from: $archive. directories: $topLevel"
           }
           if (-not (Test-Path (Join-Path $prefix "include/curl/curl.h")) -or
-              -not (Test-Path (Join-Path $prefix "lib/libcurl.a"))) {
-            throw "curl static prefix is missing required headers/libs"
+              -not (Test-Path (Join-Path $prefix "lib/libcurl.a")) ) {
+            throw "curl static prefix is missing required headers/libs in $prefix"
           }
           echo "FMD_CURL_STATIC_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "curl static prefix: $prefix"

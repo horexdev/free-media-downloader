@@ -63,20 +63,41 @@ async function download(input, destination) {
   if (!input?.url?.startsWith("https://") || !/^[0-9a-f]{64}$/.test(input.sha256)) {
     fail("source input is not fully locked");
   }
+  const targets = buildDownloadTargets(input.url);
   if (transport === "curl") {
-    await downloadWithCurl(input, destination);
+    for (const target of targets) {
+      try {
+        await downloadWithCurl({ ...input, url: target }, destination);
+        return;
+      } catch (error) {
+        if (target !== targets[targets.length - 1]) {
+          await rm(destination, { force: true });
+        } else {
+          throw error;
+        }
+      }
+    }
     return;
   }
   let response;
-  try {
-    response = await fetchWithRetries(input.url);
-  } catch (error) {
-    const hostname = new URL(input.url).hostname;
-    if (!new Set(["ffmpeg.org", "www.ffmpeg.org"]).has(hostname)) throw error;
-    console.error("fetch transport failed for " + hostname + "; retrying with curl");
-    await downloadWithCurl(input, destination);
-    return;
+  let lastError;
+  for (const target of targets) {
+    try {
+      response = await fetchWithRetries(target);
+      break;
+    } catch (error) {
+      lastError = error;
+      await rm(destination, { force: true });
+      if (targets.indexOf(target) < targets.length - 1) continue;
+      const hostname = new URL(target).hostname;
+      if (new Set(["ffmpeg.org", "www.ffmpeg.org"]).has(hostname)) {
+        console.error("fetch transport failed for " + hostname + "; retrying with curl");
+        return downloadWithCurl({ ...input, url: target }, destination);
+      }
+      throw error;
+    }
   }
+  if (!response) throw lastError;
   if (!response.ok || !response.body) fail("download failed with HTTP " + response.status);
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maximumInputBytes) fail("source input is too large");
@@ -103,6 +124,17 @@ async function download(input, destination) {
   }
 }
 
+function buildDownloadTargets(url) {
+  const parsed = new URL(url);
+  const result = [parsed.href];
+  if (parsed.hostname === "ffmpeg.org") {
+    result.push(parsed.href.replace(/^https:\/\/ffmpeg\.org/, "https://www.ffmpeg.org"));
+  } else if (parsed.hostname === "www.ffmpeg.org") {
+    result.push(parsed.href.replace(/^https:\/\/www\.ffmpeg\.org/, "https://ffmpeg.org"));
+  }
+  return [...new Set(result)];
+}
+
 async function fetchWithRetries(input) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -110,6 +142,10 @@ async function fetchWithRetries(input) {
       return await fetchWithPolicy(input);
     } catch (error) {
       lastError = error;
+      if (attempt < 3) {
+        const delayMs = 300 * attempt;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
   throw lastError ?? new Error("source download failed");

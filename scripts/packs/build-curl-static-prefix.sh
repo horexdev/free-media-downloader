@@ -22,8 +22,21 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 lock_file="$repo_root/packs/source-lock.json"
 component_source() {
   local component="$1"
-  node -e "const fs = require('node:fs'); const lock = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); const c = lock.components[process.argv[2]]; if (!c?.sourceDistribution?.url || !c?.sourceDistribution?.sha256) process.exit(1); console.log(c.sourceDistribution.url); console.log(c.sourceDistribution.sha256);" \
-    "$lock_file" "$component"
+  node - <<'NODE' "$lock_file" "$component"
+    const fs = require("node:fs");
+    const lock = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const component = lock.components[process.argv[2]];
+    if (!component) process.exit(2);
+    const source =
+      component.sourceDistribution ??
+      (component.sourceUrl && component.sha256 ? {
+        url: component.sourceUrl,
+        sha256: component.sha256,
+      } : null);
+    if (!source?.url || !source.sha256) process.exit(1);
+    console.log(source.url);
+    console.log(source.sha256);
+NODE
 }
 
 host_os=$(uname -s)
