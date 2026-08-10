@@ -8,6 +8,7 @@
     "dev": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && vite",
     "build": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && tsc --noEmit && vite build",
     "check": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore && tsc --noEmit",
+    "i18n:sync": "node scripts/sync-locales.mjs",
     "i18n:compile": "paraglide-js compile ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations --no-emit-readme --no-emit-git-ignore --no-emit-prettier-ignore",
     "tauri": "tauri"
   },
