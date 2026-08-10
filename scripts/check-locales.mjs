@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-const required = ["uk", "ky", "tg", "kk", "uz"];
+const settings = JSON.parse(await readFile(new URL("../project.inlang/settings.json", import.meta.url), "utf8"));
+const required = (settings.locales ?? ["en"]).filter((locale) => locale !== "en");
 const base = JSON.parse(await readFile(new URL("../messages/en.json", import.meta.url), "utf8"));
 const baseKeys = Object.keys(base).filter((key) => key !== "$schema").sort();
 for (const locale of required) {

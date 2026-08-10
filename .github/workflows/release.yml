@@ -1,0 +1,208 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (for manual run)"
+        required: false
+        type: string
+      prerelease:
+        description: "Create pre-release"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: "nsis"
+          - id: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: "nsis"
+          - id: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: "dmg,app"
+          - id: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: "dmg,app"
+          - id: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: "appimage,deb"
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: "appimage,deb"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: 11.16.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Ensure rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - run: rustup target add ${{ matrix.target }}
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgdk-pixbuf2.0-dev
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --config src-tauri/tauri.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - run: node scripts/package-core-artifacts.mjs --target "${{ matrix.id }}" --workspace "${{ github.workspace }}" --out "${{ runner.temp }}/core-artifacts"
+      - name: Verify packed outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.id }}"
+          expected=("${{ runner.temp }}/core-artifacts/FMD-${TARGET}-portable.zip" "${{ runner.temp }}/core-artifacts/FMD-${TARGET}-setup.exe")
+          if [[ "$TARGET" == macos-* ]]; then
+            expected=("${{ runner.temp }}/core-artifacts/FMD-${{ matrix.id }}.app.zip" "${{ runner.temp }}/core-artifacts/FMD-${{ matrix.id }}.dmg")
+          elif [[ "$TARGET" == linux-* ]]; then
+            expected=("${{ runner.temp }}/core-artifacts/FMD-${{ matrix.id }}.AppImage" "${{ runner.temp }}/core-artifacts/FMD-${{ matrix.id }}.deb")
+          fi
+
+          for f in "${expected[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "missing artifact: $f"
+              exit 1
+            fi
+          done
+
+          for f in "${expected[@]}"; do
+            echo " - $(basename "$f")"
+          done
+      - name: Upload core artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-${{ matrix.id }}
+          path: ${{ runner.temp }}/core-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  build-engines:
+    uses: ./.github/workflows/engine-packs.yml
+    with:
+      run_packs: true
+
+  release:
+    needs: [build-core, build-engines]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Determine tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -z "${{ github.event.inputs.tag }}" ]]; then
+            echo "Manual release requires a tag input"
+            exit 1
+          fi
+
+          TAG="${{ github.event.inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            PRERELEASE="${{ github.event.inputs.prerelease }}"
+          else
+            PRERELEASE=true
+          fi
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+      - name: Download all core artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/core
+          pattern: core-*
+          merge-multiple: true
+      - name: Download all engine pack artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/engines
+          pattern: unsigned-*
+          merge-multiple: true
+      - name: Normalize release assets
+        run: |
+          find artifacts -type f -maxdepth 3 | sort
+          mkdir -p artifacts/release
+          find artifacts -maxdepth 3 -type f -print0 | xargs -0 -I{} mv {} artifacts/release/
+          find artifacts/release -type f | sort
+      - name: Add SHA256 checksums
+        run: |
+          cd artifacts/release
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Draft release notes
+        run: |
+          TAG="${{ steps.release_tag.outputs.tag }}"
+          cat > release-notes.md <<EOF
+          # Free Media Downloader release ${TAG}
+
+          This release is unsigned at the application/engine distribution layer.
+          Windows/macOS users may see platform trust prompts; use the release files directly.
+
+          ## Artifacts
+
+          - Core application builds for all 6 targets
+          - Unsigned engine packs (`video-core`, `live-streams`, `galleries`, `general-downloads`, `ffmpeg-standard`)
+          - SHA256SUMS
+          EOF
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=()
+          for f in artifacts/release/*; do
+            assets+=("$f")
+          done
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No assets to upload"
+            exit 1
+          fi
+          if [[ "${{ steps.release_tag.outputs.prerelease }}" == "true" ]]; then
+            gh release create "${{ steps.release_tag.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "Free Media Downloader ${{ steps.release_tag.outputs.tag }}" \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              --draft \
+              --notes-file release-notes.md \
+              "${assets[@]}"
+          else
+            gh release create "${{ steps.release_tag.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "Free Media Downloader ${{ steps.release_tag.outputs.tag }}" \
+              --target "${{ github.sha }}" \
+              --draft \
+              --notes-file release-notes.md \
+              "${assets[@]}"
+          fi
