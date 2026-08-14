@@ -156,12 +156,30 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
     exit 1
   fi
 
-  grep -Eq '^#define CONFIG_OPENSSL 0$' config.h
-  grep -Eq '^#define CONFIG_SCHANNEL 1$' config.h
-  grep -Eq '^#define HAVE_PTHREADS 1$' config.h
-  ! grep -Eq '^#define CONFIG_(XLIB|LIBXCB|LIBXCB_SHM|LIBXCB_XFIXES|LIBXCB_SHAPE) 1$' config.h
-  ! grep -Eq '^#define CONFIG_GPL 1$' config.h
-  ! grep -Eq '^#define CONFIG_NONFREE 1$' config.h
+  grep -Eq '^#define CONFIG_OPENSSL 0$' config.h || {
+    echo "FFmpeg unexpectedly enabled OpenSSL" >&2
+    exit 1
+  }
+  grep -Eq '^#define CONFIG_SCHANNEL 1$' config.h || {
+    echo "FFmpeg did not enable Schannel" >&2
+    exit 1
+  }
+  grep -Eq '^#define HAVE_W32THREADS 1$' config.h || {
+    echo "FFmpeg did not enable the Windows threading backend" >&2
+    exit 1
+  }
+  if grep -Eq '^#define CONFIG_(XLIB|LIBXCB|LIBXCB_SHM|LIBXCB_XFIXES|LIBXCB_SHAPE) 1$' config.h; then
+    echo "FFmpeg unexpectedly enabled an X11 dependency" >&2
+    exit 1
+  fi
+  if grep -Eq '^#define CONFIG_GPL 1$' config.h; then
+    echo "FFmpeg unexpectedly enabled GPL components" >&2
+    exit 1
+  fi
+  if grep -Eq '^#define CONFIG_NONFREE 1$' config.h; then
+    echo "FFmpeg unexpectedly enabled nonfree components" >&2
+    exit 1
+  fi
   make -j"$jobs"
   make install
 )

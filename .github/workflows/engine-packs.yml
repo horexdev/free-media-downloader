@@ -452,20 +452,18 @@ jobs:
           echo "ARIA2_PATH=$aria2" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build packager and curl worker (Windows)
         if: startsWith(matrix.target, 'windows-')
-        run: >-
-          cargo build --locked --release
-          -p fmd-packager -p fmd-curl-worker
-          --no-default-features --features native-stack
+        run: |
+          cargo build --locked --release -p fmd-packager
+          cargo build --locked --release -p fmd-curl-worker --no-default-features --features native-stack
       - name: Build packager and curl worker (Linux/macOS)
         if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
         env:
           FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
           PKG_CONFIG_PATH: "${{ runner.temp }}/curl-static-prefix/prefix/lib/pkgconfig"
           PKG_CONFIG_ALL_STATIC: "1"
-        run: >-
-          cargo build --locked --release
-          -p fmd-packager -p fmd-curl-worker
-          --no-default-features --features native-stack
+        run: |
+          cargo build --locked --release -p fmd-packager
+          cargo build --locked --release -p fmd-curl-worker --no-default-features --features native-stack
       - name: Build fixture-enabled curl worker (Windows)
         if: startsWith(matrix.target, 'windows-')
         run: >-
