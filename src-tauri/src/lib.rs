@@ -778,6 +778,7 @@ struct UpdateInstallation {
 }
 
 fn resolve_update_installation(paths: &AppPaths) -> Result<Option<UpdateInstallation>, ApiError> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let executable = std::env::current_exe()
         .map_err(|_| ApiError::new("update.install_identity_failed", EngineErrorKind::Internal))?;
 

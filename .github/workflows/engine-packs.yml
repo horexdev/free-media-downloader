@@ -161,10 +161,34 @@ jobs:
           --curl curl
           --work "${{ runner.temp }}/ffmpeg-input"
           --gpg gpg
-      - name: Install cross toolchain
+      - name: Install cross build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends mingw-w64 nasm make pkg-config
+          sudo apt-get install --yes --no-install-recommends nasm make pkg-config
+      - name: Install GNU MinGW cross toolchain
+        if: matrix.target == 'windows-x64'
+        run: sudo apt-get install --yes --no-install-recommends mingw-w64
+      - name: Install LLVM MinGW cross toolchain
+        if: matrix.target == 'windows-arm64'
+        shell: bash
+        run: |
+          read -r url sha256 < <(node -e '
+            const lock = require("./packs/source-lock.json");
+            const tool = lock.buildTools.llvmMingw;
+            console.log(`${tool.url} ${tool.sha256}`);
+          ')
+          archive="${{ runner.temp }}/llvm-mingw.tar.xz"
+          destination="${{ runner.temp }}/llvm-mingw"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$url"
+          echo "$sha256  $archive" | sha256sum --check --strict
+          tar -tf "$archive" | awk '
+            /^\// || /(^|\/)\.\.($|\/)/ || /\\/ { bad=1 }
+            END { exit bad }
+          '
+          mkdir -m 700 "$destination"
+          tar -xJf "$archive" --strip-components=1 -C "$destination"
+          test -x "$destination/bin/aarch64-w64-mingw32-clang"
+          echo "$destination/bin" >> "$GITHUB_PATH"
       - name: Build packager
         run: cargo build --locked --release -p fmd-packager
       - name: Build Windows ffmpeg
@@ -405,16 +429,16 @@ jobs:
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $extract
           Expand-Archive -Path $archive -DestinationPath $extract -Force
           $prefix = Get-ChildItem -Path $extract -Directory -ErrorAction Stop |
-            Where-Object {
-              Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and
-              Test-Path (Join-Path $_.FullName "lib/libcurl.a")
+              Where-Object {
+              (Test-Path (Join-Path $_.FullName "include/curl/curl.h")) -and
+              (Test-Path (Join-Path $_.FullName "lib/libcurl.a"))
             } |
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $prefix) {
             $prefix = Get-ChildItem -Path $extract -Recurse -Directory -Depth 3 -ErrorAction Stop |
-              Where-Object {
-                Test-Path (Join-Path $_.FullName "include/curl/curl.h") -and
-                Test-Path (Join-Path $_.FullName "lib/libcurl.a")
+            Where-Object {
+                (Test-Path (Join-Path $_.FullName "include/curl/curl.h")) -and
+                (Test-Path (Join-Path $_.FullName "lib/libcurl.a"))
               } |
               Select-Object -First 1 -ExpandProperty FullName
           }

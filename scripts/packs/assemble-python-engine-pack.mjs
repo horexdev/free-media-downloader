@@ -326,7 +326,7 @@ async function collectFiles(root, executableFiles) {
       size: metadata.size,
       sha256: await sha256File(absolutePath),
       role,
-      executable: role === "Executable",
+      executable: role === "executable",
     });
   }
   return result;
@@ -349,11 +349,11 @@ async function* walkFiles(root, relative) {
 }
 
 function collectRole(relativePath, executableFiles) {
-  if (executableFiles.has(relativePath)) return "Executable";
-  if (relativePath.startsWith("LICENSES/")) return "License";
+  if (executableFiles.has(relativePath)) return "executable";
+  if (relativePath.startsWith("LICENSES/")) return "license";
   return ["sources.json", "sbom.spdx.json", "provenance.intoto.jsonl", "manifest.json"].includes(relativePath)
-    ? "Metadata"
-    : "Resource";
+    ? "metadata"
+    : "resource";
 }
 
 function parseArguments(values) {

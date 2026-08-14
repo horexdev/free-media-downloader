@@ -24,8 +24,8 @@ component_source() {
   local component="$1"
   node - <<'NODE' "$lock_file" "$component"
     const fs = require("node:fs");
-    const lock = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const component = lock.components[process.argv[2]];
+    const lock = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    const component = lock.components[process.argv[3]];
     if (!component) process.exit(2);
     const source =
       component.sourceDistribution ??
@@ -34,8 +34,7 @@ component_source() {
         sha256: component.sha256,
       } : null);
     if (!source?.url || !source.sha256) process.exit(1);
-    console.log(source.url);
-    console.log(source.sha256);
+    console.log(`${source.url} ${source.sha256}`);
 NODE
 }
 

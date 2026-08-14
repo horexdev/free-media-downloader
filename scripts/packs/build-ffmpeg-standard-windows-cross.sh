@@ -69,10 +69,34 @@ validate_archive "$ffmpeg_archive"
 mkdir "$work_dir/ffmpeg-source"
 tar -xf "$ffmpeg_archive" -C "$work_dir/ffmpeg-source" --strip-components=1
 
+if command -v "$cross_prefix-gcc" >/dev/null; then
+  cc="$cross_prefix-gcc"
+  cxx="$cross_prefix-g++"
+  assembler="$cross_prefix-as"
+  ar="$cross_prefix-ar"
+  ranlib="$cross_prefix-ranlib"
+  nm="$cross_prefix-nm"
+  objdump="$cross_prefix-objdump"
+  strip_tool="$cross_prefix-strip"
+  strings_tool="$cross_prefix-strings"
+elif command -v "$cross_prefix-clang" >/dev/null; then
+  cc="$cross_prefix-clang"
+  cxx="$cross_prefix-clang++"
+  assembler="$cross_prefix-clang"
+  ar="llvm-ar"
+  ranlib="llvm-ranlib"
+  nm="llvm-nm"
+  objdump="llvm-objdump"
+  strip_tool="llvm-strip"
+  strings_tool="llvm-strings"
+else
+  echo "required compiler missing for target: $cross_prefix" >&2
+  exit 1
+fi
+
 required_tools=(
-  "$cross_prefix-gcc" "$cross_prefix-g++" "$cross_prefix-ar" "$cross_prefix-ranlib"
-  "$cross_prefix-nm" "$cross_prefix-objdump" "$cross_prefix-strip"
-  make pkg-config strip
+  "$cc" "$cxx" "$assembler" "$ar" "$ranlib" "$nm" "$objdump" "$strip_tool"
+  "$strings_tool" make pkg-config
 )
 for tool in "${required_tools[@]}"; do
   if ! command -v "$tool" >/dev/null; then
@@ -118,14 +142,13 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
     --extra-version=fmd.1 \
     --cpu="$recipe_arch" \
     --enable-cross-compile \
-    --cc="${cross_prefix}-gcc" \
-    --cxx="${cross_prefix}-g++" \
-    --ar="${cross_prefix}-ar" \
-    --as="${cross_prefix}-as" \
-    --nm="${cross_prefix}-nm" \
-    --ranlib="${cross_prefix}-ranlib" \
-    --strip="${cross_prefix}-strip" \
-    --objdump="${cross_prefix}-objdump" \
+    --cc="$cc" \
+    --cxx="$cxx" \
+    --ar="$ar" \
+    --as="$assembler" \
+    --nm="$nm" \
+    --ranlib="$ranlib" \
+    --strip="$strip_tool" \
     --pkg-config-flags="--static" \
     --enable-schannel \
     "${recipe_configuration[@]}" \
@@ -146,7 +169,12 @@ cp "$work_dir/ffmpeg-prefix/bin/ffmpeg.exe" "$output_dir/ffmpeg.exe"
 cp "$work_dir/ffmpeg-prefix/bin/ffprobe.exe" "$output_dir/ffprobe.exe"
 chmod 755 "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe"
 
-"$output_dir/ffmpeg.exe" -hide_banner -version | grep -F "ffmpeg version ${recipe_version}-fmd.1"
-"$output_dir/ffprobe.exe" -hide_banner -version | grep -F "ffprobe version ${recipe_version}-fmd.1"
-"$output_dir/ffmpeg.exe" -hide_banner -buildconf 2>&1 | grep -F -- '--disable-gpl'
-"$output_dir/ffmpeg.exe" -hide_banner -buildconf 2>&1 | grep -F -- '--disable-nonfree'
+if [[ "$target" == windows-x64 ]]; then
+  "$objdump" -f "$output_dir/ffmpeg.exe" | grep -Eq 'i386:x86-64|pei-x86-64'
+else
+  "$objdump" -f "$output_dir/ffmpeg.exe" | grep -Eq 'aarch64|arm64|coff-arm64'
+fi
+"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F "ffmpeg version ${recipe_version}-fmd.1"
+"$strings_tool" "$output_dir/ffprobe.exe" | grep -F "ffprobe version ${recipe_version}-fmd.1"
+"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-gpl'
+"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-nonfree'

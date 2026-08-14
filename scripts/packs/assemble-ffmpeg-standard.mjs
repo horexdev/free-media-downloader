@@ -142,18 +142,20 @@ await writeJson(template, {
   }],
 });
 
-smoke(
-  ffmpegTarget,
-  ["--version"],
-  (stdout) => stdout.includes(component.version),
-  "ffmpeg",
-);
-smoke(
-  ffprobeTarget,
-  ["--version"],
-  (stdout) => stdout.includes(component.version),
-  "ffprobe",
-);
+if (hostTarget === options.target) {
+  smoke(
+    ffmpegTarget,
+    ["-version"],
+    (stdout) => stdout.includes(component.version),
+    "ffmpeg",
+  );
+  smoke(
+    ffprobeTarget,
+    ["-version"],
+    (stdout) => stdout.includes(component.version),
+    "ffprobe",
+  );
+}
 
 run(packager, ["package", template, payload, output]);
 const archiveSize = (await stat(output)).size;
@@ -277,7 +279,10 @@ function smoke(executable, args, accepts, label) {
     windowsHide: true,
   });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  if (result.status !== 0 || !accepts(output)) fail(`${label} smoke test failed`);
+  if (result.status !== 0 || !accepts(output)) {
+    const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    fail(`${label} smoke test failed${diagnostic ? `: ${diagnostic}` : ""}`);
+  }
 }
 
 function smokeEnvironment() {
@@ -370,7 +375,7 @@ async function collectFiles(root) {
       size: metadata.size,
       sha256: await sha256File(absolutePath),
       role,
-      executable: role === "Executable",
+      executable: role === "executable",
     });
   }
   return result;
@@ -393,10 +398,10 @@ async function* walkFiles(root, relative) {
 }
 
 function collectRole(relativePath) {
-  if (relativePath === ffmpegEntrypoint || relativePath === ffprobeEntrypoint) return "Executable";
-  if (relativePath.startsWith("LICENSES/")) return "License";
+  if (relativePath === ffmpegEntrypoint || relativePath === ffprobeEntrypoint) return "executable";
+  if (relativePath.startsWith("LICENSES/")) return "license";
   return ["sources.json", "sbom.spdx.json", "provenance.intoto.jsonl", "manifest.json"]
     .includes(relativePath)
-      ? "Metadata"
-      : "Resource";
+      ? "metadata"
+      : "resource";
 }
