@@ -233,18 +233,43 @@ build_curl() {
   local source_log="$work_dir/build-curl.log"
   (
     cd "$source_dir"
-    ./configure --prefix="$prefix_dir" \
-      --with-ssl="$prefix_dir" \
-      --with-nghttp2="$prefix_dir" \
-      --with-libssh2="$prefix_dir" \
-      --with-zlib="$prefix_dir" \
-      --disable-shared \
-      --enable-static \
-      --disable-ldap --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
-      --disable-gopher --disable-imap --disable-pop3 --disable-smtp --disable-smb \
-      --disable-manual
-    make -j"$jobs"
-    make install
+    cmake -S . -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX="$prefix_dir" \
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_PREFIX_PATH="$prefix_dir" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_STATIC_LIBS=ON \
+      -DBUILD_CURL_EXE=OFF \
+      -DBUILD_LIBCURL_DOCS=OFF \
+      -DBUILD_MISC_DOCS=OFF \
+      -DBUILD_TESTING=OFF \
+      -DCURL_USE_PKGCONFIG=OFF \
+      -DCURL_USE_OPENSSL=ON \
+      -DOPENSSL_ROOT_DIR="$prefix_dir" \
+      -DCURL_ZLIB=ON \
+      -DZLIB_INCLUDE_DIR="$prefix_dir/include" \
+      -DZLIB_LIBRARY="$prefix_dir/lib/libz.a" \
+      -DUSE_NGHTTP2=ON \
+      -DNGHTTP2_USE_STATIC_LIBS=ON \
+      -DNGHTTP2_INCLUDE_DIR="$prefix_dir/include" \
+      -DNGHTTP2_LIBRARY="$prefix_dir/lib/libnghttp2.a" \
+      -DCURL_USE_LIBSSH2=ON \
+      -DLIBSSH2_USE_STATIC_LIBS=ON \
+      -DLIBSSH2_INCLUDE_DIR="$prefix_dir/include" \
+      -DLIBSSH2_LIBRARY="$prefix_dir/lib/libssh2.a" \
+      -DCURL_DISABLE_LDAP=ON \
+      -DCURL_DISABLE_RTSP=ON \
+      -DCURL_DISABLE_DICT=ON \
+      -DCURL_DISABLE_TELNET=ON \
+      -DCURL_DISABLE_TFTP=ON \
+      -DCURL_DISABLE_GOPHER=ON \
+      -DCURL_DISABLE_IMAP=ON \
+      -DCURL_DISABLE_POP3=ON \
+      -DCURL_DISABLE_SMTP=ON \
+      -DCURL_ENABLE_SMB=OFF
+    cmake --build build --parallel "$jobs"
+    cmake --install build
   ) 2>&1 | tee "$source_log"
   if [[ -f "$prefix_dir/lib64/libcurl.a" && ! -f "$prefix_dir/lib/libcurl.a" ]]; then
     ln -sf "$prefix_dir/lib64/libcurl.a" "$prefix_dir/lib/libcurl.a"

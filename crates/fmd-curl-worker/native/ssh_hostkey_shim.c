@@ -1,9 +1,13 @@
 #include <curl/curl.h>
 #include <stddef.h>
 
-_Static_assert(CURLSSH_AUTH_PUBLICKEY == (1L << 0), "unexpected libcurl public-key auth mask");
-_Static_assert(CURLSSH_AUTH_PASSWORD == (1L << 1), "unexpected libcurl password auth mask");
-_Static_assert(CURLSSH_AUTH_NONE == 0L, "unexpected libcurl no-auth mask");
+#define FMD_STATIC_ASSERT(name, condition) typedef char name[(condition) ? 1 : -1]
+
+FMD_STATIC_ASSERT(fmd_public_key_auth_mask_is_stable,
+                  CURLSSH_AUTH_PUBLICKEY == (1L << 0));
+FMD_STATIC_ASSERT(fmd_password_auth_mask_is_stable,
+                  CURLSSH_AUTH_PASSWORD == (1L << 1));
+FMD_STATIC_ASSERT(fmd_no_auth_mask_is_stable, CURLSSH_AUTH_NONE == 0L);
 
 typedef int (*fmd_hostkey_callback)(void *context, int key_type,
                                     const unsigned char *key, size_t key_len);

@@ -144,6 +144,7 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
     --enable-cross-compile \
     --cc="$cc" \
     --cxx="$cxx" \
+    --ld="$cc" \
     --ar="$ar" \
     --as="$assembler" \
     --nm="$nm" \
