@@ -10,11 +10,13 @@ repository.workspace = true
 build = "build.rs"
 
 [features]
-default = []
+default = ["bundled-curl"]
+bundled-curl = ["curl/http2", "curl/ssl", "curl/static-curl"]
 native-stack = []
+test-fixtures = []
 
 [dependencies]
-curl = { version = "0.4.50", features = ["http2", "protocol-ftp"] }
+curl = { version = "0.4.50", default-features = false, features = ["protocol-ftp"] }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true

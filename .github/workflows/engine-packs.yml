@@ -25,7 +25,9 @@ jobs:
       - name: Verify signed FFmpeg source
         run: >-
           node scripts/packs/verify-ffmpeg-source.mjs
-          --work "${{ runner.temp }}/ffmpeg-source"
+          --transport curl
+          --curl curl
+          --work "${{ runner.temp }}/ffmpeg-input"
           --gpg gpg
       - name: Verify signed OpenSSL source
         run: >-
@@ -42,12 +44,16 @@ jobs:
         include:
           - target: linux-x64
             runner: ubuntu-24.04
+            packager: target/release/fmd-packager
           - target: linux-arm64
             runner: ubuntu-24.04-arm
+            packager: target/release/fmd-packager
           - target: macos-x64
             runner: macos-15-intel
+            packager: target/release/fmd-packager
           - target: macos-arm64
             runner: macos-15
+            packager: target/release/fmd-packager
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -57,6 +63,8 @@ jobs:
       - name: Verify signed FFmpeg source
         run: >-
           node scripts/packs/verify-ffmpeg-source.mjs
+          --transport curl
+          --curl curl
           --work "${{ runner.temp }}/ffmpeg-input"
           --gpg gpg
       - name: Verify signed OpenSSL source
@@ -100,11 +108,120 @@ jobs:
           "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz"
           "${{ runner.temp }}/ffmpeg-build"
           "${{ runner.temp }}/ffmpeg-output"
-      - name: Upload unsigned CI binaries
+      - name: Build packager
+        run: cargo build --locked --release -p fmd-packager
+      - name: Stage FFmpeg source for packaging
+        shell: bash
+        run: |
+          rm -rf "${{ runner.temp }}/ffmpeg-source"
+          mkdir -p "${{ runner.temp }}/ffmpeg-source"
+          tar -xJf "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz" \
+            --strip-components=1 -C "${{ runner.temp }}/ffmpeg-source"
+      - name: Assemble ffmpeg-standard pack
+        shell: bash
+        run: >-
+          node scripts/packs/assemble-ffmpeg-standard.mjs
+          --target "${{ matrix.target }}"
+          --work "${{ runner.temp }}/ffmpeg-work"
+          --out "${{ runner.temp }}/ffmpeg-standard-${{ matrix.target }}.zip"
+          --packager "${{ matrix.packager }}"
+          --ffmpeg "${{ runner.temp }}/ffmpeg-output/ffmpeg"
+          --ffprobe "${{ runner.temp }}/ffmpeg-output/ffprobe"
+          --source-dir "${{ runner.temp }}/ffmpeg-source"
+      - name: Upload unsigned CI artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: unsigned-ffmpeg-standard-${{ matrix.target }}
-          path: ${{ runner.temp }}/ffmpeg-output/
+          path: ${{ runner.temp }}/ffmpeg-standard-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  ffmpeg-windows:
+    if: github.event_name == 'workflow_dispatch' || inputs.run_packs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: ubuntu-24.04
+            packager: target/release/fmd-packager
+          - target: windows-arm64
+            runner: ubuntu-24.04
+            packager: target/release/fmd-packager
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Verify signed FFmpeg source
+        run: >-
+          node scripts/packs/verify-ffmpeg-source.mjs
+          --transport curl
+          --curl curl
+          --work "${{ runner.temp }}/ffmpeg-input"
+          --gpg gpg
+      - name: Install cross build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nasm make pkg-config
+      - name: Install GNU MinGW cross toolchain
+        if: matrix.target == 'windows-x64'
+        run: sudo apt-get install --yes --no-install-recommends mingw-w64
+      - name: Install LLVM MinGW cross toolchain
+        if: matrix.target == 'windows-arm64'
+        shell: bash
+        run: |
+          read -r url sha256 < <(node -e '
+            const lock = require("./packs/source-lock.json");
+            const tool = lock.buildTools.llvmMingw;
+            console.log(`${tool.url} ${tool.sha256}`);
+          ')
+          archive="${{ runner.temp }}/llvm-mingw.tar.xz"
+          destination="${{ runner.temp }}/llvm-mingw"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$url"
+          echo "$sha256  $archive" | sha256sum --check --strict
+          tar -tf "$archive" | awk '
+            /^\// || /(^|\/)\.\.($|\/)/ || /\\/ { bad=1 }
+            END { exit bad }
+          '
+          mkdir -m 700 "$destination"
+          tar -xJf "$archive" --strip-components=1 -C "$destination"
+          test -x "$destination/bin/aarch64-w64-mingw32-clang"
+          echo "$destination/bin" >> "$GITHUB_PATH"
+      - name: Build packager
+        run: cargo build --locked --release -p fmd-packager
+      - name: Build Windows ffmpeg
+        shell: bash
+        run: >-
+          bash scripts/packs/build-ffmpeg-standard-windows-cross.sh
+          "${{ matrix.target }}"
+          "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz"
+          "${{ runner.temp }}/ffmpeg-build"
+          "${{ runner.temp }}/ffmpeg-output"
+      - name: Stage FFmpeg source for packaging
+        shell: bash
+        run: |
+          rm -rf "${{ runner.temp }}/ffmpeg-source"
+          mkdir -p "${{ runner.temp }}/ffmpeg-source"
+          tar -xJf "${{ runner.temp }}/ffmpeg-input/ffmpeg-9.0.tar.xz" \
+            --strip-components=1 -C "${{ runner.temp }}/ffmpeg-source"
+      - name: Assemble ffmpeg-standard pack
+        shell: bash
+        run: >-
+          node scripts/packs/assemble-ffmpeg-standard.mjs
+          --target "${{ matrix.target }}"
+          --work "${{ runner.temp }}/ffmpeg-work"
+          --out "${{ runner.temp }}/ffmpeg-standard-${{ matrix.target }}.zip"
+          --packager "${{ matrix.packager }}"
+          --ffmpeg "${{ runner.temp }}/ffmpeg-output/ffmpeg.exe"
+          --ffprobe "${{ runner.temp }}/ffmpeg-output/ffprobe.exe"
+          --source-dir "${{ runner.temp }}/ffmpeg-source"
+      - name: Upload unsigned CI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-ffmpeg-standard-${{ matrix.target }}
+          path: ${{ runner.temp }}/ffmpeg-standard-${{ matrix.target }}.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -250,9 +367,172 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  general-downloads:
+    if: github.event_name == 'workflow_dispatch' || inputs.run_packs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-2025
+            packager: target/release/fmd-packager.exe
+            worker: target/release/fmd-curl-worker.exe
+          - target: windows-arm64
+            runner: windows-11-arm
+            packager: target/release/fmd-packager.exe
+            worker: target/release/fmd-curl-worker.exe
+          - target: macos-x64
+            runner: macos-15-intel
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: macos-arm64
+            runner: macos-15
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: linux-x64
+            runner: ubuntu-24.04
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            packager: target/release/fmd-packager
+            worker: target/release/fmd-curl-worker
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Prepare curl static prefix (Windows only)
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        run: >-
+          ./scripts/packs/build-curl-static-prefix-windows.ps1
+          -Target "${{ matrix.target }}"
+          -WorkDir "${{ runner.temp }}/curl-static-prefix"
+      - name: Prepare curl static prefix (Unix)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          bash scripts/packs/build-curl-static-prefix.sh \
+            "${{ matrix.target }}" \
+            "${{ runner.temp }}/curl-static-prefix"
+      - name: Install aria2 (Linux/macOS)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        run: |
+          if command -v apt-get >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends aria2
+          else
+            command -v brew >/dev/null && brew install aria2
+          fi
+          ARIA2_PATH="$(command -v aria2c || true)"
+          if [ -z "$ARIA2_PATH" ]; then
+            echo "Failed to resolve aria2c path"
+            exit 1
+          fi
+          echo "ARIA2_PATH=$ARIA2_PATH" >> "$GITHUB_ENV"
+      - name: Install aria2 (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $aria2Zip = "${{ runner.temp }}\\aria2.zip"
+          $aria2Out = "${{ runner.temp }}\\aria2-extract"
+          $aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+          $expectedSha256 = "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288"
+          New-Item -ItemType Directory -Force -Path $aria2Out | Out-Null
+          Invoke-WebRequest -Uri $aria2Url -OutFile $aria2Zip -UseBasicParsing
+          $actualSha256 = (Get-FileHash -LiteralPath $aria2Zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "aria2 archive SHA-256 mismatch: $actualSha256"
+          }
+          Expand-Archive -LiteralPath $aria2Zip -DestinationPath $aria2Out -Force
+          $aria2Candidates = @(Get-ChildItem -LiteralPath $aria2Out -Filter aria2c.exe -Recurse -File)
+          if ($aria2Candidates.Count -ne 1) {
+            throw "expected exactly one aria2c binary, found $($aria2Candidates.Count)"
+          }
+          echo "ARIA2_PATH=$($aria2Candidates[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build packager and curl worker (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        run: |
+          cargo build --locked --release -p fmd-packager
+          cargo build --locked --release -p fmd-curl-worker --no-default-features --features native-stack
+      - name: Build packager and curl worker (Linux/macOS)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        env:
+          FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
+          PKG_CONFIG_PATH: "${{ runner.temp }}/curl-static-prefix/prefix/lib/pkgconfig"
+          PKG_CONFIG_ALL_STATIC: "1"
+        run: |
+          cargo build --locked --release -p fmd-packager
+          cargo build --locked --release -p fmd-curl-worker --no-default-features --features native-stack
+      - name: Build fixture-enabled curl worker (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        run: >-
+          cargo build --locked --release -p fmd-curl-worker
+          --no-default-features
+          --features native-stack,test-fixtures
+          --target-dir "${{ runner.temp }}/curl-worker-fixture-target"
+      - name: Build fixture-enabled curl worker (Linux/macOS)
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        env:
+          FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
+          PKG_CONFIG_PATH: "${{ runner.temp }}/curl-static-prefix/prefix/lib/pkgconfig"
+          PKG_CONFIG_ALL_STATIC: "1"
+        run: >-
+          cargo build --locked --release -p fmd-curl-worker
+          --no-default-features
+          --features native-stack,test-fixtures
+          --target-dir "${{ runner.temp }}/curl-worker-fixture-target"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: startsWith(matrix.target, 'windows-')
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
+        with:
+          python-version: '3.12'
+      - name: Install transfer fixture dependencies
+        run: python -m pip install --disable-pip-version-check "paramiko==5.0.0"
+      - name: Test native HTTPS and SFTP transfers
+        shell: pwsh
+        run: |
+          $suffix = if ($IsWindows) { ".exe" } else { "" }
+          $fixtureWorker = Join-Path "${{ runner.temp }}" "curl-worker-fixture-target/release/fmd-curl-worker$suffix"
+          node scripts/test-curl-worker-fixtures.mjs `
+            --worker $fixtureWorker `
+            --python python `
+            --require-sftp true
+      - name: Assemble and smoke-test general-downloads
+        shell: pwsh
+        run: >-
+          node scripts/packs/assemble-general-downloads.mjs
+          --target "${{ matrix.target }}"
+          --work "${{ runner.temp }}/general-downloads-work"
+          --out "${{ runner.temp }}/general-downloads-${{ matrix.target }}.zip"
+          --packager "${{ matrix.packager }}"
+          --aria2 "${{ env.ARIA2_PATH }}"
+          --worker "${{ matrix.worker }}"
+          --require-sftp true
+      - name: Upload unsigned CI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-general-downloads-${{ matrix.target }}
+          path: ${{ runner.temp }}/general-downloads-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
   engine-packs-required:
     if: always()
-    needs: [ffmpeg-source, ffmpeg-unix, video-core, python-packs]
+    needs:
+      - ffmpeg-source
+      - ffmpeg-unix
+      - ffmpeg-windows
+      - video-core
+      - python-packs
+      - general-downloads
     runs-on: ubuntu-24.04
     steps:
       - name: Require successful engine-pack checks when selected
@@ -260,15 +540,17 @@ jobs:
           SHOULD_RUN: ${{ github.event_name == 'workflow_dispatch' || inputs.run_packs }}
           FFMPEG_SOURCE: ${{ needs.ffmpeg-source.result }}
           FFMPEG_UNIX: ${{ needs.ffmpeg-unix.result }}
+          FFMPEG_WINDOWS: ${{ needs.ffmpeg-windows.result }}
           VIDEO_CORE: ${{ needs.video-core.result }}
           PYTHON_PACKS: ${{ needs.python-packs.result }}
+          GENERAL_DOWNLOADS: ${{ needs.general-downloads.result }}
         run: |
           if [[ "$SHOULD_RUN" != "true" ]]; then
             echo "Engine-pack checks are not required for these changes."
             exit 0
           fi
 
-          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$VIDEO_CORE" "$PYTHON_PACKS"; do
+          for result in "$FFMPEG_SOURCE" "$FFMPEG_UNIX" "$FFMPEG_WINDOWS" "$VIDEO_CORE" "$PYTHON_PACKS" "$GENERAL_DOWNLOADS"; do
             if [[ "$result" != "success" ]]; then
               echo "A required engine-pack check finished with: $result"
               exit 1

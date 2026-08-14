@@ -2,4 +2,4 @@
 import type { InputSource } from "./InputSource.js";
 import type { SourceKind } from "./SourceKind.js";
 
-export type JobSpec = { source: InputSource, destination: string, preferred_kind: SourceKind | null, selected_format: string | null, subtitle_languages: Array<string>, overwrite: boolean, };
+export type JobSpec = { source: InputSource, destination: string, preferred_kind: SourceKind | null, selected_format: string | null, subtitle_languages: Array<string>, selected_playlist_entries: Array<number> | null, overwrite: boolean, };

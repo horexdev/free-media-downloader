@@ -20,7 +20,11 @@ anyhow.workspace = true
 chrono.workspace = true
 directories.workspace = true
 fmd-core = { path = "../crates/fmd-core" }
+fmd-curl-worker = { path = "../crates/fmd-curl-worker" }
+fmd-updater = { path = "../crates/fmd-updater" }
 serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.2"
 tracing.workspace = true

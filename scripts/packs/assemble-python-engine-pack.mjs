@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { chmod, copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod, copyFile, cp, lstat, mkdir, readFile,
+  readdir, rm, stat, writeFile,
+} from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -177,6 +180,8 @@ await writeFile(join(payload, "provenance.intoto.jsonl"), JSON.stringify({
 }) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
 
 const template = join(work, "manifest-template.json");
+const executableFiles = new Set(subjects.map((subject) => subject.name));
+const files = await collectFiles(payload, executableFiles);
 await writeJson(template, {
   schema_version: 1,
   id: recipe.packId,
@@ -192,7 +197,7 @@ await writeJson(template, {
   })),
   engines,
   components,
-  files: [],
+  files,
   self_tests: engines.map((engine) => ({
     engine_id: engine.id,
     expected_version: engine.version,
@@ -307,6 +312,48 @@ function currentTarget() {
   const os = { win32: "windows", darwin: "macos", linux: "linux" }[process.platform];
   const architecture = { x64: "x64", arm64: "arm64" }[process.arch];
   return os && architecture ? `${os}-${architecture}` : null;
+}
+
+async function collectFiles(root, executableFiles) {
+  const result = [];
+  for await (const entry of walkFiles(root, "")) {
+    const absolutePath = join(root, entry);
+    const metadata = await lstat(absolutePath);
+    if (!metadata.isFile()) fail(`manifest collection allows regular files only: ${entry}`);
+    const role = collectRole(entry, executableFiles);
+    result.push({
+      path: entry,
+      size: metadata.size,
+      sha256: await sha256File(absolutePath),
+      role,
+      executable: role === "executable",
+    });
+  }
+  return result;
+}
+
+async function* walkFiles(root, relative) {
+  const entries = await readdir(join(root, relative));
+  entries.sort((left, right) => left.localeCompare(right));
+  for (const entry of entries) {
+    const entryPath = `${relative ? `${relative}/${entry}` : entry}`;
+    const item = await lstat(join(root, entryPath));
+    if (item.isDirectory()) {
+      yield* walkFiles(root, entryPath);
+    } else if (item.isFile()) {
+      yield entryPath;
+    } else {
+      fail(`unsupported file type in ${recipe.packId} payload: ${entryPath}`);
+    }
+  }
+}
+
+function collectRole(relativePath, executableFiles) {
+  if (executableFiles.has(relativePath)) return "executable";
+  if (relativePath.startsWith("LICENSES/")) return "license";
+  return ["sources.json", "sbom.spdx.json", "provenance.intoto.jsonl", "manifest.json"].includes(relativePath)
+    ? "metadata"
+    : "resource";
 }
 
 function parseArguments(values) {

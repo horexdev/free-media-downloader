@@ -71,6 +71,10 @@ const libssh2 = lock.components.libssh2;
 if (libssh2.requiredSecurityCommits.length < 2 || libssh2.requiredSecurityCommits.some((value) => !commit.test(value))) {
   fail("libssh2 security patch set is incomplete");
 }
+const libssh2SecurityHead = libssh2.requiredSecurityCommits.at(-1);
+if (libssh2.commit !== libssh2SecurityHead || !libssh2.sourceDistribution.url.includes(libssh2SecurityHead)) {
+  fail("libssh2 source distribution does not include the locked security patch set");
+}
 const recipes = await readdir(new URL("../packs/recipes/", import.meta.url));
 for (const filename of recipes) {
   const recipe = JSON.parse(await readFile(new URL(`../packs/recipes/${filename}`, import.meta.url), "utf8"));

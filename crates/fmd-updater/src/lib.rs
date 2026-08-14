@@ -55,6 +55,7 @@ pub struct ApplyRequestV2 {
     pub authorized_target_name: String,
     pub metadata_receipt_path: String,
     pub artifact_path: String,
+    pub updates_root: String,
     pub artifact_length: u64,
     pub artifact_sha256: String,
     pub install_root: String,
@@ -163,6 +164,8 @@ pub enum UpdateError {
     Concurrent,
     #[error("parent process did not exit")]
     ParentAlive,
+    #[error("parent process identity does not match the request")]
+    ParentIdentity,
     #[error("candidate did not acknowledge health")]
     HealthTimeout,
     #[error("rollback failed: {0}")]
@@ -202,6 +205,7 @@ impl ApplyRequestV2 {
         let paths = [
             &self.metadata_receipt_path,
             &self.artifact_path,
+            &self.updates_root,
             &self.install_root,
             &self.payload_root,
             &self.state_root,
@@ -217,9 +221,17 @@ impl ApplyRequestV2 {
             return Err(RequestError::UnsafeField);
         }
         let install = Path::new(&self.install_root);
+        let backup = Path::new(&self.backup_root);
         if !Path::new(&self.payload_root).starts_with(install)
-            || !Path::new(&self.state_root).starts_with(install)
-            || !Path::new(&self.backup_root).starts_with(install)
+            || (backup != Path::new(&self.state_root).join("update-backups")
+                && backup != install.join(".fmd-backups"))
+        {
+            return Err(RequestError::Layout);
+        }
+        let transaction = self.transaction_id.to_string();
+        let expected_root = Path::new(&self.updates_root).join("core").join(transaction);
+        if Path::new(&self.metadata_receipt_path) != expected_root.join("receipt.json")
+            || Path::new(&self.artifact_path) != expected_root.join("artifact.bin")
         {
             return Err(RequestError::Layout);
         }
@@ -237,6 +249,11 @@ impl ApplyRequestV2 {
 
 pub fn apply(request: &ApplyRequestV2) -> Result<TransactionState, UpdateError> {
     request.validate()?;
+    if !process_start_token(request.parent_pid)
+        .is_ok_and(|token| token == request.parent_start_token)
+    {
+        return Err(UpdateError::ParentIdentity);
+    }
     let install_root = Path::new(&request.install_root);
     let state_root = Path::new(&request.state_root);
     let backup_root = Path::new(&request.backup_root);
@@ -475,13 +492,31 @@ fn launch_candidate(
     health_path: &Path,
 ) -> Result<Child, UpdateError> {
     let executable = match request.install_kind {
-        InstallKind::WindowsPortable => Path::new(&request.install_root).join(&marker.launcher),
-        _ => Path::new(&request.payload_root).join(&marker.payload_executable),
+        InstallKind::WindowsPortable => {
+            let pointer: CurrentPayload = serde_json::from_slice(&std::fs::read(
+                Path::new(&request.state_root).join("current.json"),
+            )?)?;
+            Path::new(&request.payload_root)
+                .join(pointer.version)
+                .join(pointer.executable)
+        }
+        InstallKind::MacosSelfManaged => {
+            Path::new(&request.payload_root).join(&marker.payload_executable)
+        }
+        InstallKind::LinuxAppImage => PathBuf::from(&request.payload_root),
     };
     let child = Command::new(executable)
         .env_clear()
         .env("FMD_UPDATE_HEALTH_PATH", health_path)
         .env("FMD_UPDATE_HEALTH_TOKEN", &request.health_token)
+        .env(
+            "FMD_UPDATE_TRANSACTION_ID",
+            request.transaction_id.to_string(),
+        )
+        .env(
+            "FMD_INSTALLATION_UUID",
+            request.installation_uuid.to_string(),
+        )
         .spawn()?;
     Ok(child)
 }
@@ -489,7 +524,10 @@ fn launch_candidate(
 fn launch_previous(request: &ApplyRequestV2, marker: &InstallMarker) -> Result<Child, UpdateError> {
     let executable = match request.install_kind {
         InstallKind::WindowsPortable => Path::new(&request.install_root).join(&marker.launcher),
-        _ => Path::new(&request.payload_root).join(&marker.payload_executable),
+        InstallKind::MacosSelfManaged => {
+            Path::new(&request.payload_root).join(&marker.payload_executable)
+        }
+        InstallKind::LinuxAppImage => PathBuf::from(&request.payload_root),
     };
     Ok(Command::new(executable).env_clear().spawn()?)
 }
@@ -519,6 +557,24 @@ fn verify_artifact(request: &ApplyRequestV2) -> Result<(), UpdateError> {
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher)?;
     if format!("{:x}", hasher.finalize()) != request.artifact_sha256.to_ascii_lowercase() {
+        return Err(UpdateError::ArtifactIdentity);
+    }
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&request.metadata_receipt_path)?)?;
+    let receipt_matches = receipt.get("target_name").and_then(|value| value.as_str())
+        == Some(request.authorized_target_name.as_str())
+        && receipt.get("version").and_then(|value| value.as_str())
+            == Some(request.target_version.as_str())
+        && receipt
+            .get("security_sequence")
+            .and_then(|value| value.as_u64())
+            == Some(request.target_security_sequence)
+        && receipt.get("length").and_then(|value| value.as_u64()) == Some(request.artifact_length)
+        && receipt
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(&request.artifact_sha256));
+    if !receipt_matches {
         return Err(UpdateError::ArtifactIdentity);
     }
     Ok(())
@@ -610,6 +666,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), UpdateError> {
         .open(&temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
+    drop(file);
     replace_file(&temporary, path)?;
     sync_parent(path)?;
     Ok(())
@@ -687,13 +744,86 @@ fn remove_payload(path: &Path) -> Result<(), UpdateError> {
 
 fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     let started = Instant::now();
+    let expected = process_start_token(pid).ok();
     while started.elapsed() < timeout {
-        if !process_exists(pid) {
+        if !process_exists(pid) || process_start_token(pid).ok() != expected {
             return true;
         }
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+pub fn process_start_token(pid: u32) -> Result<String, std::io::Error> {
+    process_start_token_impl(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_token_impl(pid: u32) -> Result<String, std::io::Error> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let closing = stat.rfind(')').ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid process stat")
+    })?;
+    stat[closing + 1..]
+        .split_whitespace()
+        .nth(19)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "missing process start token",
+            )
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn process_start_token_impl(pid: u32) -> Result<String, std::io::Error> {
+    let output = Command::new("/bin/ps")
+        .env_clear()
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()?;
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || token.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "process start token unavailable",
+        ));
+    }
+    Ok(token)
+}
+
+#[cfg(windows)]
+fn process_start_token_impl(pid: u32) -> Result<String, std::io::Error> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess};
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let success = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if success == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(format!(
+            "{:08x}{:08x}",
+            created.dwHighDateTime, created.dwLowDateTime
+        ))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn process_start_token_impl(_pid: u32) -> Result<String, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "process start tokens are not supported",
+    ))
 }
 
 #[cfg(unix)]
@@ -748,6 +878,62 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
 
+    fn valid_request(root: &Path) -> ApplyRequestV2 {
+        let transaction_id = Uuid::new_v4();
+        let updates_root = root.join("updates");
+        let transaction_root = updates_root.join("core").join(transaction_id.to_string());
+        std::fs::create_dir_all(&transaction_root).unwrap();
+        let artifact = transaction_root.join("artifact.bin");
+        std::fs::write(&artifact, b"update payload").unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(b"update payload"));
+        let receipt = serde_json::json!({
+            "target_name": "core-windows-x64.json",
+            "version": "0.2.0",
+            "security_sequence": 2,
+            "length": 14,
+            "sha256": sha256,
+            "metadata_json": "{}",
+            "created_at": "2026-08-15T00:00:00Z"
+        });
+        std::fs::write(
+            transaction_root.join("receipt.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        let install = root.join("install");
+        let state = root.join("state");
+        ApplyRequestV2 {
+            protocol_version: PROTOCOL_VERSION,
+            transaction_id,
+            installation_uuid: Uuid::new_v4(),
+            parent_pid: std::process::id(),
+            parent_start_token: process_start_token(std::process::id()).unwrap(),
+            install_kind: InstallKind::WindowsPortable,
+            artifact_kind: ArtifactKind::ZipPayload,
+            current_version: "0.1.0".into(),
+            target_version: "0.2.0".into(),
+            target_build: "core-windows-x64.json".into(),
+            current_security_sequence: 1,
+            target_security_sequence: 2,
+            authorized_target_name: "core-windows-x64.json".into(),
+            metadata_receipt_path: transaction_root
+                .join("receipt.json")
+                .to_string_lossy()
+                .into(),
+            artifact_path: artifact.to_string_lossy().into(),
+            updates_root: updates_root.to_string_lossy().into(),
+            artifact_length: 14,
+            artifact_sha256: sha256,
+            install_root: install.to_string_lossy().into(),
+            payload_root: install.join("app").to_string_lossy().into(),
+            state_root: state.to_string_lossy().into(),
+            backup_root: state.join("update-backups").to_string_lossy().into(),
+            relaunch: RelaunchMode::Normal,
+            health_token: "b".repeat(64),
+            health_deadline_seconds: 60,
+        }
+    }
+
     #[test]
     fn state_machine_cannot_skip_health_check() {
         assert!(!TransactionState::Swapped.can_transition_to(TransactionState::Committed));
@@ -777,6 +963,7 @@ mod tests {
             authorized_target_name: "fmd.zip".into(),
             metadata_receipt_path: format!("{root}/state/receipt.json"),
             artifact_path: format!("{root}/state/fmd.zip"),
+            updates_root: format!("{root}/updates"),
             artifact_length: 1024,
             artifact_sha256: "a".repeat(64),
             install_root: root.into(),
@@ -788,5 +975,83 @@ mod tests {
             health_deadline_seconds: 60,
         };
         assert_eq!(request.validate(), Err(RequestError::Rollback));
+    }
+
+    #[test]
+    fn request_paths_are_bound_to_the_transaction() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut request = valid_request(temporary.path());
+        assert_eq!(request.validate(), Ok(()));
+        request.artifact_path = temporary.path().join("other.bin").to_string_lossy().into();
+        assert_eq!(request.validate(), Err(RequestError::Layout));
+    }
+
+    #[test]
+    fn artifact_verification_checks_the_receipt_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let request = valid_request(temporary.path());
+        assert!(verify_artifact(&request).is_ok());
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&request.metadata_receipt_path).unwrap())
+                .unwrap();
+        receipt["security_sequence"] = serde_json::json!(3);
+        std::fs::write(
+            &request.metadata_receipt_path,
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_artifact(&request),
+            Err(UpdateError::ArtifactIdentity)
+        ));
+    }
+
+    #[test]
+    fn current_process_has_a_stable_start_token() {
+        let pid = std::process::id();
+        let first = process_start_token(pid).unwrap();
+        let second = process_start_token(pid).unwrap();
+        assert!(!first.is_empty());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn pointer_swap_rolls_back_to_the_previous_payload() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pointer = temporary.path().join("current.json");
+        std::fs::write(&pointer, b"previous").unwrap();
+        let swap = Swap::Pointer {
+            pointer: pointer.clone(),
+            previous: b"previous".to_vec(),
+            next: b"next".to_vec(),
+        };
+        swap.activate().unwrap();
+        assert_eq!(std::fs::read(&pointer).unwrap(), b"next");
+        swap.rollback().unwrap();
+        assert_eq!(std::fs::read(&pointer).unwrap(), b"previous");
+    }
+
+    #[test]
+    fn payload_swap_quarantines_a_failed_candidate_before_rollback() {
+        let temporary = tempfile::tempdir().unwrap();
+        let current = temporary.path().join("current");
+        let candidate = temporary.path().join("candidate");
+        let backup = temporary.path().join("backup");
+        std::fs::create_dir(&current).unwrap();
+        std::fs::create_dir(&candidate).unwrap();
+        std::fs::write(current.join("version"), b"previous").unwrap();
+        std::fs::write(candidate.join("version"), b"candidate").unwrap();
+        let swap = Swap::Payload {
+            current: current.clone(),
+            backup,
+            candidate,
+        };
+        swap.activate().unwrap();
+        assert_eq!(
+            std::fs::read(current.join("version")).unwrap(),
+            b"candidate"
+        );
+        swap.rollback().unwrap();
+        assert_eq!(std::fs::read(current.join("version")).unwrap(), b"previous");
     }
 }

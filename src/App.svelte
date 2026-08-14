@@ -12,6 +12,8 @@
   import type { JobState } from "./lib/bindings/JobState.js";
   import type { RouteDecision } from "./lib/bindings/RouteDecision.js";
   import type { SourceKind } from "./lib/bindings/SourceKind.js";
+  import type { CoreUpdateInfo } from "./lib/bindings/CoreUpdateInfo.js";
+  import type { SftpTrustInfo } from "./lib/bindings/SftpTrustInfo.js";
 
   const hasDesktopBackend = "__TAURI_INTERNALS__" in window;
 
@@ -26,6 +28,9 @@
   let notice = $state("");
   let error = $state("");
   let currentLocale = $state(getLocale());
+  let coreUpdate = $state<CoreUpdateInfo | null>(null);
+  let updatingCore = $state(false);
+  let trustByJob = $state<Record<string, SftpTrustInfo>>({});
 
   const isBetaLocale = $derived(localeMetadata[currentLocale].review === "beta");
   const direction = $derived(localeMetadata[currentLocale].direction);
@@ -48,7 +53,7 @@
           invoke<JobSnapshot[]>("list_jobs"),
         ]);
         await invoke("acknowledge_ui_ready");
-        await refreshPacks();
+        await Promise.all([refreshPacks(), checkCoreUpdate()]);
       } catch (reason) {
         error = readableError(reason);
       }
@@ -153,6 +158,7 @@
           preferred_kind: route.source_kind,
           selected_format: null,
           subtitle_languages: [],
+          selected_playlist_entries: null,
           overwrite: false,
         },
       });
@@ -202,6 +208,106 @@
     }
   }
 
+  async function checkCoreUpdate(): Promise<void> {
+    if (!hasDesktopBackend) return;
+    try {
+      coreUpdate = await invoke<CoreUpdateInfo | null>("check_for_core_update");
+    } catch (reason) {
+      notice = readableError(reason);
+    }
+  }
+
+  async function applyCoreUpdate(): Promise<void> {
+    if (!coreUpdate || updatingCore) return;
+    if (!window.confirm(m.update_confirm({ version: coreUpdate.version }))) return;
+    updatingCore = true;
+    error = "";
+    try {
+      const prepared = await invoke<{ status: { transactionId: string } }>("prepare_core_update", {
+        targetName: coreUpdate.targetName,
+      });
+      await invoke("download_core_update", { transactionId: prepared.status.transactionId });
+      notice = m.update_restarting();
+      await invoke("apply_core_update", { transactionId: prepared.status.transactionId });
+    } catch (reason) {
+      error = readableError(reason);
+      updatingCore = false;
+    }
+  }
+
+  async function jobAction(command: "pause_job" | "resume_job" | "retry_job" | "cancel_job", id: string): Promise<void> {
+    error = "";
+    try {
+      await invoke(command, { id });
+      await refreshJobs();
+    } catch (reason) {
+      error = readableError(reason);
+    }
+  }
+
+  async function loadSftpTrust(id: string): Promise<void> {
+    try {
+      const trust = await invoke<SftpTrustInfo>("sftp_trust_status", { id });
+      trustByJob = { ...trustByJob, [id]: trust };
+    } catch (reason) {
+      error = readableError(reason);
+    }
+  }
+
+  async function choosePrivateKey(id: string): Promise<void> {
+    const selection = await open({ directory: false, multiple: false });
+    if (typeof selection !== "string") return;
+    const input = document.getElementById(`key-${id}`) as HTMLInputElement | null;
+    if (input) input.value = selection;
+  }
+
+  async function submitSelection(job: JobSnapshot, event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    error = "";
+    try {
+      if (job.plan?.auth_requirements.length) {
+        const trust = trustByJob[job.id];
+        if (!trust) {
+          await loadSftpTrust(job.id);
+          return;
+        }
+        const confirmed = trust.state === "match"
+          || data.get("confirmHostKey") === "yes";
+        if (!confirmed) {
+          error = m.sftp_confirmation_required();
+          return;
+        }
+        const credentialKind = String(data.get("credentialKind") || "password");
+        await invoke("authorize_sftp_job", {
+          id: job.id,
+          authorization: {
+            trustAction: trust.state === "unknown" ? "trust" : trust.state === "mismatch" ? "replace" : "match",
+            credentialKind,
+            username: String(data.get("username") || ""),
+            password: credentialKind === "password" ? String(data.get("password") || "") : null,
+            keyPath: credentialKind === "private_key" ? String(data.get("keyPath") || "") : null,
+            passphrase: credentialKind === "private_key" ? String(data.get("passphrase") || "") || null : null,
+          },
+        });
+      }
+      const playlistMode = String(data.get("playlistMode") || "all");
+      const selectedEntries = data.getAll("playlistEntry").map(Number).filter(Number.isSafeInteger);
+      const updated = await invoke<JobSnapshot>("complete_job_selection", {
+        id: job.id,
+        selection: {
+          format: data.get("format") ? String(data.get("format")) : null,
+          subtitleLanguages: data.getAll("subtitle").map(String),
+          selectedPlaylistEntries: playlistMode === "selected" ? selectedEntries : null,
+        },
+      });
+      jobs = jobs.map((candidate) => candidate.id === updated.id ? updated : candidate);
+    } catch (reason) {
+      error = readableError(reason);
+    }
+  }
+
   interface AvailablePack {
     targetName: string;
     packId: string;
@@ -238,6 +344,13 @@
       case "canceled": return m.status_canceled();
       case "awaiting_selection": return m.analyze_action();
     }
+  }
+
+  function eta(job: JobSnapshot): string | null {
+    if (!job.total_bytes || !job.speed_bytes_per_second || job.speed_bytes_per_second <= 0) return null;
+    const seconds = Math.max(0, Math.ceil((job.total_bytes - job.downloaded_bytes) / job.speed_bytes_per_second));
+    const minutes = Math.floor(seconds / 60);
+    return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
   }
 
   function kindLabel(kind: SourceKind): string {
@@ -283,6 +396,23 @@
   </header>
 
   <main id="top">
+    {#if coreUpdate}
+      <section class="update-banner" aria-live="polite">
+        <div>
+          <strong>{m.update_available({ version: coreUpdate.version })}</strong>
+          <span>{coreUpdate.unsigned ? m.update_unsigned_notice() : ""}</span>
+        </div>
+        {#if coreUpdate.automaticApplySupported}
+          <button class="primary-button" type="button" onclick={applyCoreUpdate} disabled={updatingCore}>
+            {updatingCore ? m.update_preparing() : m.update_action()}
+          </button>
+        {:else}
+          <a class="primary-button" href="https://github.com/horexdev/free-media-downloader/releases" target="_blank" rel="noreferrer">
+            {m.update_manual_action()}
+          </a>
+        {/if}
+      </section>
+    {/if}
     <section class="hero" aria-labelledby="hero-title">
       <div class="eyebrow"><span></span> Web media · Live · Galleries · Files</div>
       <h1 id="hero-title">{m.tagline()}</h1>
@@ -371,10 +501,87 @@
                     {formatBytes(job.downloaded_bytes)}
                     {#if job.total_bytes} / {formatBytes(job.total_bytes)}{/if}
                     {#if job.speed_bytes_per_second} · {formatBytes(job.speed_bytes_per_second)}/s{/if}
+                    {#if eta(job)} · ETA {eta(job)}{/if}
                   </small>
                 {/if}
+                {#if job.state === "awaiting_selection" && job.plan}
+                  <form class="selection-form" onsubmit={(event) => submitSelection(job, event)}>
+                    {#if job.plan.formats.length > 1}
+                      <label>{m.selection_format()}
+                        <select name="format" required>
+                          {#each job.plan.formats as format}
+                            <option value={format.id}>{format.label}{format.container ? ` · ${format.container}` : ""}</option>
+                          {/each}
+                        </select>
+                      </label>
+                    {/if}
+                    {#if job.plan.subtitles.length}
+                      <fieldset>
+                        <legend>{m.selection_subtitles()}</legend>
+                        {#each job.plan.subtitles as language}
+                          <label class="check-option"><input type="checkbox" name="subtitle" value={language} /> {language}</label>
+                        {/each}
+                      </fieldset>
+                    {/if}
+                    {#if job.plan.playlist_entries.length}
+                      <fieldset>
+                        <legend>{m.selection_playlist()}</legend>
+                        <label class="check-option"><input type="radio" name="playlistMode" value="all" checked /> {m.playlist_all()}</label>
+                        <label class="check-option"><input type="radio" name="playlistMode" value="selected" /> {m.playlist_selected()}</label>
+                        <div class="playlist-options">
+                          {#each job.plan.playlist_entries as entry}
+                            <label class="check-option"><input type="checkbox" name="playlistEntry" value={entry.index} /> {entry.index}. {entry.title}</label>
+                          {/each}
+                        </div>
+                      </fieldset>
+                    {/if}
+                    {#if job.plan.auth_requirements.length}
+                      {#if trustByJob[job.id]}
+                        {@const trust = trustByJob[job.id]}
+                        <fieldset class:danger-field={trust.state === "mismatch"}>
+                          <legend>{m.sftp_host_key()}</legend>
+                          <p>{trust.host}:{trust.port} · {trust.algorithm}</p>
+                          <code>{trust.fingerprintSha256}</code>
+                          {#if trust.state !== "match"}
+                            <label class="check-option">
+                              <input type="checkbox" name="confirmHostKey" value="yes" />
+                              {trust.state === "unknown" ? m.sftp_trust_unknown() : m.sftp_replace_key()}
+                            </label>
+                          {/if}
+                          <label>{m.sftp_auth_method()}
+                            <select name="credentialKind">
+                              <option value="password">{m.sftp_password()}</option>
+                              <option value="private_key">{m.sftp_private_key()}</option>
+                            </select>
+                          </label>
+                          <label>{m.sftp_username()}<input name="username" autocomplete="username" required /></label>
+                          <label>{m.sftp_password()}<input name="password" type="password" autocomplete="current-password" /></label>
+                          <label>{m.sftp_private_key()}<span class="inline-input"><input id={`key-${job.id}`} name="keyPath" autocomplete="off" /><button type="button" onclick={() => choosePrivateKey(job.id)}>{m.choose_action()}</button></span></label>
+                          <label>{m.sftp_passphrase()}<input name="passphrase" type="password" autocomplete="off" /></label>
+                        </fieldset>
+                      {:else}
+                        <button class="secondary-button" type="button" onclick={() => loadSftpTrust(job.id)}>{m.sftp_configure()}</button>
+                      {/if}
+                    {/if}
+                    <button class="primary-button" type="submit" disabled={job.plan.auth_requirements.length > 0 && !trustByJob[job.id]}>{m.selection_continue()}</button>
+                  </form>
+                {/if}
               </div>
-              <span class="state-chip">{stateLabel(job.state)}</span>
+              <div class="job-controls">
+                <span class="state-chip">{stateLabel(job.state)}</span>
+                {#if ["queued", "preparing", "downloading"].includes(job.state)}
+                  <button type="button" onclick={() => jobAction("pause_job", job.id)}>{m.pause_action()}</button>
+                {/if}
+                {#if ["paused", "interrupted"].includes(job.state)}
+                  <button type="button" onclick={() => jobAction("resume_job", job.id)}>{m.resume_action()}</button>
+                {/if}
+                {#if job.state === "failed"}
+                  <button type="button" onclick={() => jobAction("retry_job", job.id)}>{m.retry_action()}</button>
+                {/if}
+                {#if !["completed", "failed", "canceled"].includes(job.state)}
+                  <button type="button" class="danger-button" onclick={() => jobAction("cancel_job", job.id)}>{m.cancel_action()}</button>
+                {/if}
+              </div>
             </article>
           {/each}
         </div>

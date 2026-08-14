@@ -62,6 +62,7 @@ impl JobScheduler {
             title: None,
             formats: Vec::new(),
             subtitles: Vec::new(),
+            playlist_entries: Vec::new(),
             chapters: 0,
             files: 1,
             warnings: Vec::new(),
@@ -87,13 +88,20 @@ impl JobScheduler {
             });
         }
         job.state = next;
+        if matches!(next, JobState::Probing | JobState::Queued) {
+            job.error = None;
+        }
         job.updated_at = Utc::now();
         self.store.save(job)?;
         Ok(job.clone())
     }
 
     pub fn set_plan(&self, id: JobId, plan: ResolvedPlan) -> Result<JobSnapshot, CoreError> {
-        let next = if plan.formats.len() > 1 || !plan.auth_requirements.is_empty() {
+        let next = if plan.formats.len() > 1
+            || !plan.subtitles.is_empty()
+            || !plan.playlist_entries.is_empty()
+            || !plan.auth_requirements.is_empty()
+        {
             JobState::AwaitingSelection
         } else {
             JobState::Queued
@@ -116,6 +124,16 @@ impl JobScheduler {
     }
 
     pub fn select_format(&self, id: JobId, format: String) -> Result<JobSnapshot, CoreError> {
+        self.complete_selection(id, Some(format), Vec::new(), None)
+    }
+
+    pub fn complete_selection(
+        &self,
+        id: JobId,
+        format: Option<String>,
+        subtitle_languages: Vec<String>,
+        selected_playlist_entries: Option<Vec<u32>>,
+    ) -> Result<JobSnapshot, CoreError> {
         let mut jobs = self.jobs.write();
         let job = jobs
             .get_mut(&id)
@@ -126,14 +144,38 @@ impl JobScheduler {
                 to: JobState::Queued.to_string(),
             });
         }
-        let valid = job
+        let plan = job
             .plan
             .as_ref()
-            .is_some_and(|plan| plan.formats.iter().any(|candidate| candidate.id == format));
-        if !valid {
+            .ok_or_else(|| CoreError::InvalidInput("selection plan is missing".into()))?;
+        if plan.formats.len() > 1
+            && format
+                .as_ref()
+                .is_none_or(|value| !plan.formats.iter().any(|candidate| &candidate.id == value))
+        {
             return Err(CoreError::InvalidInput("unknown format selection".into()));
         }
-        job.spec.selected_format = Some(format);
+        if subtitle_languages
+            .iter()
+            .any(|language| !plan.subtitles.contains(language))
+        {
+            return Err(CoreError::InvalidInput("unknown subtitle selection".into()));
+        }
+        if let Some(entries) = &selected_playlist_entries
+            && (entries.is_empty()
+                || entries.iter().any(|index| {
+                    !plan
+                        .playlist_entries
+                        .iter()
+                        .any(|entry| entry.index == *index)
+                }))
+        {
+            return Err(CoreError::InvalidInput("unknown playlist selection".into()));
+        }
+        job.spec.selected_format =
+            format.or_else(|| (plan.formats.len() == 1).then(|| plan.formats[0].id.clone()));
+        job.spec.subtitle_languages = subtitle_languages;
+        job.spec.selected_playlist_entries = selected_playlist_entries;
         job.state = JobState::Queued;
         job.updated_at = Utc::now();
         self.store.save(job)?;
@@ -220,6 +262,7 @@ mod tests {
             preferred_kind: None,
             selected_format: None,
             subtitle_languages: Vec::new(),
+            selected_playlist_entries: None,
             overwrite: false,
         }
     }
@@ -246,5 +289,66 @@ mod tests {
             .transition(job.id, JobState::Completed)
             .unwrap_err();
         assert!(matches!(error, CoreError::InvalidTransition { .. }));
+    }
+
+    #[test]
+    fn completes_format_subtitle_and_playlist_selection_atomically() {
+        let scheduler = JobScheduler::new(JobStore::open_in_memory().unwrap(), 2).unwrap();
+        let job = scheduler.create(spec()).unwrap();
+        let plan = ResolvedPlan {
+            source_kind: crate::source::SourceKind::SiteMedia,
+            title: Some("Playlist".into()),
+            formats: vec![
+                crate::job::FormatOption {
+                    id: "720".into(),
+                    label: "720p".into(),
+                    container: Some("mp4".into()),
+                    estimated_bytes: None,
+                },
+                crate::job::FormatOption {
+                    id: "1080".into(),
+                    label: "1080p".into(),
+                    container: Some("mp4".into()),
+                    estimated_bytes: None,
+                },
+            ],
+            subtitles: vec!["en".into(), "ru".into()],
+            playlist_entries: vec![
+                crate::job::PlaylistEntry {
+                    index: 1,
+                    id: "one".into(),
+                    title: "One".into(),
+                },
+                crate::job::PlaylistEntry {
+                    index: 2,
+                    id: "two".into(),
+                    title: "Two".into(),
+                },
+            ],
+            chapters: 0,
+            files: 2,
+            warnings: Vec::new(),
+            auth_requirements: Vec::new(),
+            required_packs: Vec::new(),
+        };
+        let awaiting = scheduler.set_plan(job.id, plan).unwrap();
+        assert_eq!(awaiting.state, JobState::AwaitingSelection);
+        assert!(
+            scheduler
+                .complete_selection(job.id, Some("missing".into()), Vec::new(), None)
+                .is_err()
+        );
+        let queued = scheduler
+            .complete_selection(
+                job.id,
+                Some("1080".into()),
+                vec!["en".into()],
+                Some(vec![2]),
+            )
+            .unwrap();
+        assert_eq!(queued.state, JobState::Queued);
+        assert_eq!(queued.spec.selected_format.as_deref(), Some("1080"));
+        assert_eq!(queued.spec.subtitle_languages, vec!["en"]);
+        assert_eq!(queued.spec.selected_playlist_entries, Some(vec![2]));
     }
 }

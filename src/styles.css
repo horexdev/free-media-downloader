@@ -67,11 +67,17 @@ main { width: min(1120px, 90vw); margin: 0 auto; padding: 64px 0 80px; }
 .route-preview small { color: var(--muted); }
 .route-kind { color: var(--accent); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .primary-button { flex: 0 0 auto; padding: 14px 18px; }
+.primary-button:is(a) { display: inline-block; text-decoration: none; }
+.secondary-button, .job-controls button, .inline-input button { border: 1px solid var(--line); padding: 8px 10px; color: var(--ink); background: var(--panel-raised); }
+.danger-button { color: var(--danger) !important; }
 .message { margin: 0; padding: 12px 20px; border-top: 1px solid var(--line); font-size: 13px; }
 .message.error { color: var(--danger); }
 .message.notice { color: var(--success); }
 
 .dashboard { margin-top: 72px; }
+.update-banner { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 34px; padding: 16px 18px; border: 1px solid rgba(242,201,76,.45); background: rgba(242,201,76,.08); }
+.update-banner strong, .update-banner span { display: block; }
+.update-banner span { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .section-heading > div { display: flex; align-items: baseline; gap: 14px; }
 .section-index { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
@@ -92,6 +98,20 @@ main { width: min(1120px, 90vw); margin: 0 auto; padding: 64px 0 80px; }
 .job-progress { width: min(420px, 100%); height: 4px; margin-top: 9px; overflow: hidden; border-radius: 999px; background: #202b36; }
 .job-progress span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms linear; }
 .state-chip { padding: 6px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; }
+.job-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.job-controls button { padding: 6px 9px; font-size: 11px; }
+.selection-form { display: grid; gap: 12px; margin-top: 14px; padding: 14px; border: 1px solid var(--line); background: var(--panel); }
+.selection-form > label, .selection-form fieldset > label:not(.check-option) { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.selection-form select, .selection-form input { min-width: 0; border: 1px solid var(--line); padding: 9px; color: var(--ink); background: #0d141b; }
+.selection-form fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line); }
+.selection-form legend { padding: 0 5px; color: var(--accent); font-size: 11px; text-transform: uppercase; }
+.selection-form code { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+.selection-form p { margin: 0; }
+.check-option { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 12px; }
+.check-option input { margin-top: 2px; }
+.playlist-options { display: grid; max-height: 180px; overflow: auto; gap: 5px; padding-inline-start: 16px; }
+.danger-field { border-color: rgba(255,123,114,.65) !important; }
+.inline-input { display: grid; grid-template-columns: 1fr auto; }
 .pack-note { margin-top: 45px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; padding: 20px; border: 1px solid var(--line); background: rgba(18,25,34,.6); }
 .pack-note p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
 .pack-dots { display: flex; gap: 6px; }
@@ -111,6 +131,8 @@ main { width: min(1120px, 90vw); margin: 0 auto; padding: 64px 0 80px; }
   .empty-state { align-items: flex-start; padding: 35px 10px; }
   .job-card { grid-template-columns: 10px minmax(0,1fr); }
   .state-chip { grid-column: 2; justify-self: start; }
+  .job-controls { grid-column: 2; justify-content: flex-start; }
+  .update-banner { align-items: stretch; flex-direction: column; }
   .pack-note { grid-template-columns: auto 1fr; }
   .pack-dots { display: none; }
 }
