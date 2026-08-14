@@ -119,6 +119,25 @@ class HttpsHandler(BaseHTTPRequestHandler):
         return
 
 
+class TlsThreadingHTTPServer(ThreadingHTTPServer):
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler: type[BaseHTTPRequestHandler],
+        context: ssl.SSLContext,
+    ) -> None:
+        self.tls_context = context
+        super().__init__(server_address, request_handler)
+
+    def get_request(self) -> tuple[ssl.SSLSocket, tuple[str, int]]:
+        connection, address = super().get_request()
+        try:
+            return self.tls_context.wrap_socket(connection, server_side=True), address
+        except Exception:
+            connection.close()
+            raise
+
+
 class SftpAuthServer(paramiko.ServerInterface):
     def __init__(self, client_key: paramiko.PKey) -> None:
         self.client_key = client_key
@@ -202,11 +221,10 @@ def main() -> int:
     ca_path, cert_path, tls_key_path = write_tls_material(root)
 
     report_startup("starting HTTPS server")
-    https = ThreadingHTTPServer(("127.0.0.1", 0), HttpsHandler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(cert_path, tls_key_path)
-    https.socket = tls.wrap_socket(https.socket, server_side=True)
+    https = TlsThreadingHTTPServer(("127.0.0.1", 0), HttpsHandler, tls)
     threading.Thread(target=https.serve_forever, daemon=True).start()
 
     report_startup("generating SFTP keys")
