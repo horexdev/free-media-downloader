@@ -22,6 +22,7 @@ pub struct JobExecutor {
     packs: PackLayout,
     staging_root: PathBuf,
     cancellations: Arc<Mutex<BTreeMap<JobId, CancellationToken>>>,
+    transfer_auth: Arc<Mutex<BTreeMap<JobId, crate::adapter::TransferAuth>>>,
     events: EventSink,
 }
 
@@ -38,6 +39,7 @@ impl JobExecutor {
             packs,
             staging_root,
             cancellations: Arc::new(Mutex::new(BTreeMap::new())),
+            transfer_auth: Arc::new(Mutex::new(BTreeMap::new())),
             events,
         }
     }
@@ -66,15 +68,41 @@ impl JobExecutor {
                 .is_some_and(|job| job.state.is_terminal())
             {
                 let _ = executor.scheduler.store().release_engine_leases(id);
+                executor.transfer_auth.lock().remove(&id);
             }
             executor.cancellations.lock().remove(&id);
         });
         Ok(())
     }
 
+    pub fn set_transfer_auth(
+        &self,
+        id: JobId,
+        auth: crate::adapter::TransferAuth,
+    ) -> Result<(), CoreError> {
+        let job = self
+            .scheduler
+            .get(id)
+            .ok_or_else(|| CoreError::JobNotFound(id.to_string()))?;
+        if job.state != JobState::AwaitingSelection {
+            return Err(CoreError::InvalidTransition {
+                from: job.state.to_string(),
+                to: JobState::Queued.to_string(),
+            });
+        }
+        self.transfer_auth.lock().insert(id, auth);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn has_transfer_auth(&self, id: JobId) -> bool {
+        self.transfer_auth.lock().contains_key(&id)
+    }
+
     pub fn cancel(&self, id: JobId) -> Result<(), CoreError> {
         if let Some(cancellation) = self.cancellations.lock().get(&id) {
             self.scheduler.transition(id, JobState::Canceled)?;
+            self.transfer_auth.lock().remove(&id);
             (self.events)(JobEvent::StateChanged {
                 id,
                 state: JobState::Canceled,
@@ -88,9 +116,13 @@ impl JobExecutor {
             .ok_or_else(|| CoreError::JobNotFound(id.to_string()))?;
         if matches!(
             job.state,
-            JobState::Queued | JobState::Paused | JobState::Interrupted
+            JobState::AwaitingSelection
+                | JobState::Queued
+                | JobState::Paused
+                | JobState::Interrupted
         ) {
             self.scheduler.transition(id, JobState::Canceled)?;
+            self.transfer_auth.lock().remove(&id);
             (self.events)(JobEvent::StateChanged {
                 id,
                 state: JobState::Canceled,
@@ -160,7 +192,16 @@ impl JobExecutor {
                 to: JobState::Queued.to_string(),
             });
         }
-        self.scheduler.transition(id, JobState::Queued)?;
+        let next = if job
+            .plan
+            .as_ref()
+            .is_some_and(|plan| !plan.auth_requirements.is_empty())
+        {
+            JobState::Probing
+        } else {
+            JobState::Queued
+        };
+        self.scheduler.transition(id, next)?;
         self.submit(id)
     }
 
@@ -298,6 +339,9 @@ impl JobExecutor {
                 source: job.spec.source.clone(),
                 source_kind: route.source_kind,
                 selected_format: job.spec.selected_format.clone(),
+                subtitle_languages: job.spec.subtitle_languages.clone(),
+                selected_playlist_entries: job.spec.selected_playlist_entries.clone(),
+                transfer_auth: self.transfer_auth.lock().get(&id).cloned(),
                 staging: staging.clone(),
                 output_name: safe_output_name(
                     job.plan.as_ref().and_then(|plan| plan.title.as_deref()),

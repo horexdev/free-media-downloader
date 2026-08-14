@@ -4,6 +4,7 @@ use fmd_curl_worker::transfer::execute;
 use fmd_curl_worker::{
     MAX_REQUEST_BYTES, TransferError, WorkerEnvelope, WorkerEvent, WorkerMessage,
 };
+use zeroize::Zeroize;
 
 fn main() {
     emit(&WorkerMessage::hello());
@@ -21,7 +22,9 @@ fn main() {
         return;
     }
 
-    let envelope: WorkerEnvelope = match serde_json::from_slice(&input) {
+    let decoded = serde_json::from_slice(&input);
+    input.zeroize();
+    let envelope: WorkerEnvelope = match decoded {
         Ok(value) => value,
         Err(_) => {
             emit_event(
@@ -44,6 +47,8 @@ fn main() {
         return;
     }
     if let Err(error) = execute(envelope.request, |event| emit_event(&request_id, event)) {
+        #[cfg(feature = "test-fixtures")]
+        eprintln!("fixture transfer error: {error}");
         emit_event(
             &request_id,
             WorkerEvent::Failed {

@@ -82,9 +82,18 @@ pub struct DownloadContext {
     pub source: InputSource,
     pub source_kind: SourceKind,
     pub selected_format: Option<String>,
+    pub subtitle_languages: Vec<String>,
+    pub selected_playlist_entries: Option<Vec<u32>>,
+    pub transfer_auth: Option<TransferAuth>,
     pub staging: PathBuf,
     pub output_name: String,
     pub installation: InstalledEngine,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransferAuth {
+    pub credentials: fmd_curl_worker::Credentials,
+    pub trusted_host_key: fmd_curl_worker::TrustedHostKey,
 }
 
 pub type EventSink = Arc<dyn Fn(JobEvent) + Send + Sync>;
@@ -241,6 +250,20 @@ impl BuiltinCliAdapter {
                     .arg(&context.output_name);
                 if let Some(format) = &context.selected_format {
                     command = command.arg("--format").arg(format);
+                }
+                if let Some(entries) = &context.selected_playlist_entries {
+                    let items = entries
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    command = command.arg("--playlist-items").arg(items);
+                }
+                if !context.subtitle_languages.is_empty() {
+                    command = command
+                        .arg("--write-subs")
+                        .arg("--sub-langs")
+                        .arg(context.subtitle_languages.join(","));
                 }
                 if let Some(deno) = context.installation.companion("deno")? {
                     command = command
@@ -542,6 +565,7 @@ impl BuiltinCliAdapter {
                 .map(str::to_owned),
             formats: Vec::new(),
             subtitles: Vec::new(),
+            playlist_entries: Vec::new(),
             chapters: 0,
             files: 1,
             warnings: Vec::new(),
@@ -586,26 +610,31 @@ impl BuiltinCliAdapter {
         cancellation: CancellationToken,
     ) -> Result<DownloadOutcome, EngineFailure> {
         let source = Self::source_url(&context.source)?;
-        if source.starts_with("sftp:") {
+        let is_sftp = source.starts_with("sftp:");
+        let transfer_auth = context.transfer_auth.as_ref();
+        if is_sftp && transfer_auth.is_none() {
             return Err(EngineFailure {
                 kind: EngineErrorKind::AuthRequired,
                 code: "sftp.credentials_required".into(),
                 retry_after_seconds: None,
-                diagnostic: "SFTP requires a trusted key and an in-memory credential channel"
+                diagnostic: "SFTP authorization was not supplied through the in-memory channel"
                     .into(),
             });
         }
         let output = context.staging.join(&context.output_name);
+        let resume_from = std::fs::metadata(&output)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         let request = fmd_curl_worker::WorkerEnvelope {
             protocol_version: fmd_curl_worker::WORKER_PROTOCOL_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
             request: fmd_curl_worker::WorkerRequest::Download {
                 url: source.to_owned(),
                 destination: output.to_string_lossy().into_owned(),
-                resume_from: 0,
+                resume_from,
                 expected_validator: None,
-                credentials: None,
-                trusted_host_key: None,
+                credentials: transfer_auth.map(|auth| auth.credentials.clone()),
+                trusted_host_key: transfer_auth.map(|auth| auth.trusted_host_key.clone()),
             },
         };
         let messages = self
@@ -654,6 +683,7 @@ impl BuiltinCliAdapter {
         input.push(b'\n');
         let mut spec = ProcessSpec::cli(command);
         spec.input = Some(input);
+        spec.sensitive_input = true;
         let outcome = self
             .supervisor
             .run(spec, cancellation.clone())
@@ -717,16 +747,44 @@ fn parse_probe_json(value: &str, source_kind: SourceKind) -> ResolvedPlan {
             })
         })
         .collect();
+    let subtitles = json
+        .get("subtitles")
+        .and_then(Value::as_object)
+        .map(|values| values.keys().cloned().collect())
+        .unwrap_or_default();
+    let playlist_entries = json
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(offset, entry)| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_owned();
+            let index = entry
+                .get("playlist_index")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(offset as u32 + 1);
+            let title = entry
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_owned();
+            Some(crate::job::PlaylistEntry { index, id, title })
+        })
+        .collect::<Vec<_>>();
+    let files = u32::try_from(playlist_entries.len().max(1)).unwrap_or(u32::MAX);
     ResolvedPlan {
         source_kind,
         title,
         formats,
-        subtitles: Vec::new(),
+        subtitles,
+        playlist_entries,
         chapters: json
             .get("chapters")
             .and_then(Value::as_array)
             .map_or(0, |chapters| chapters.len() as u32),
-        files: 1,
+        files,
         warnings: Vec::new(),
         auth_requirements: Vec::new(),
         required_packs: Vec::new(),
@@ -802,12 +860,15 @@ mod tests {
     #[test]
     fn parses_yt_dlp_probe_without_exposing_extra_fields() {
         let plan = parse_probe_json(
-            r#"{"title":"Example","formats":[{"format_id":"18","format":"360p","ext":"mp4","filesize":12}],"chapters":[{}]}"#,
+            r#"{"title":"Example","formats":[{"format_id":"18","format":"360p","ext":"mp4","filesize":12}],"subtitles":{"en":[]},"entries":[{"id":"first","title":"First","playlist_index":1}],"chapters":[{}]}"#,
             SourceKind::SiteMedia,
         );
         assert_eq!(plan.title.as_deref(), Some("Example"));
         assert_eq!(plan.formats[0].id, "18");
         assert_eq!(plan.chapters, 1);
+        assert_eq!(plan.subtitles, vec!["en"]);
+        assert_eq!(plan.playlist_entries[0].index, 1);
+        assert_eq!(plan.files, 1);
     }
 
     #[test]

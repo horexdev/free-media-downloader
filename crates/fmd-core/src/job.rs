@@ -85,7 +85,7 @@ impl JobState {
                 )
                 | (S::Paused, S::Queued | S::Canceled)
                 | (S::Interrupted, S::Queued | S::Canceled)
-                | (S::Failed, S::Queued)
+                | (S::Failed, S::Probing | S::Queued)
         )
     }
 
@@ -103,6 +103,7 @@ pub struct JobSpec {
     pub preferred_kind: Option<SourceKind>,
     pub selected_format: Option<String>,
     pub subtitle_languages: Vec<String>,
+    pub selected_playlist_entries: Option<Vec<u32>>,
     pub overwrite: bool,
 }
 
@@ -115,6 +116,14 @@ pub struct FormatOption {
     pub estimated_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlaylistEntry {
+    pub index: u32,
+    pub id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ResolvedPlan {
@@ -122,6 +131,7 @@ pub struct ResolvedPlan {
     pub title: Option<String>,
     pub formats: Vec<FormatOption>,
     pub subtitles: Vec<String>,
+    pub playlist_entries: Vec<PlaylistEntry>,
     pub chapters: u32,
     pub files: u32,
     pub warnings: Vec<String>,

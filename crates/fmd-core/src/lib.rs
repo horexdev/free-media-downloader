@@ -19,11 +19,13 @@ pub use engine::{
 };
 pub use error::{ApiError, CoreError, EngineErrorKind};
 pub use executor::JobExecutor;
-pub use job::{JobEvent, JobId, JobSnapshot, JobSpec, JobState, ResolvedPlan};
+pub use job::{
+    FormatOption, JobEvent, JobId, JobSnapshot, JobSpec, JobState, PlaylistEntry, ResolvedPlan,
+};
 pub use metalink::{MetalinkFile, MetalinkLimits, MetalinkPreview};
 pub use pack::{
-    ActivationPointer, AuthorizedExternalTarget, DownloadedTarget, ExtractionLimits, PackInstaller,
-    PackLayout, TufRepository,
+    ActivationPointer, ArtifactDescriptorV1, AuthorizedDescriptorTarget, AuthorizedExternalTarget,
+    DownloadedTarget, ExtractionLimits, PackInstaller, PackLayout, TufRepository,
 };
 pub use process::{
     ChildStdin, EngineCommand, ExpertArgsPolicy, OutputStream, ProcessLine, ProcessOutcome,
@@ -32,11 +34,13 @@ pub use process::{
 pub use routing::{RouteDecision, Router};
 pub use scheduler::JobScheduler;
 pub use source::{InputSource, SourceKind};
-pub use storage::{JobStore, PackConsentRecord, SftpHostKeyRecord};
+pub use storage::{
+    JobStore, PackConsentRecord, SftpHostKeyRecord, UpdateJournalRecord, UpdateReceipt,
+};
 
 /// IPC adapter version required by engine descriptors shipped for this core.
 pub const ADAPTER_API_VERSION: u32 = 1;
 pub use adapter::{
     BuiltinCliAdapter, DownloadContext, DownloadOutcome, EngineAdapter, EngineFailure, EventSink,
-    InstalledEngine, ProbeContext,
+    InstalledEngine, ProbeContext, TransferAuth,
 };

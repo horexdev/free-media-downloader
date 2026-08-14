@@ -15,3 +15,5 @@
 /engines/
 /artifacts/
 /src-tauri/gen/
+__pycache__/
+*.py[cod]

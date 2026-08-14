@@ -64,8 +64,8 @@ If the Node transport repeatedly fails against the direct FFmpeg origin, verific
 through curl with redirects disabled and the same size, digest, and signature requirements.
 
 The current workflow also performs unsigned native build smoke tests for Linux and macOS on x64 and
-ARM64. Linux links a separately verified static OpenSSL build; macOS must select SecureTransport.
-All other external libraries are disabled by default, while pthreads and zlib are explicitly
-selected. The build rejects GPL/nonfree configuration, X11 contamination, and unexpected runtime
-TLS dependencies. Windows native builds and final `ffmpeg-standard` pack assembly remain required
-before this pack is runnable.
+ARM64, and cross-compiled Windows builds on Ubuntu for x64/ARM64. Linux links a separately verified
+static OpenSSL build; macOS must select SecureTransport. All other external libraries are disabled by
+default, while pthreads and zlib are explicitly selected. The build rejects GPL/nonfree
+configuration, X11 contamination, and unexpected runtime TLS dependencies. Final `ffmpeg-standard`
+pack assembly is required before this pack is runnable.

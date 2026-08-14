@@ -11,6 +11,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize;
 
 use crate::error::CoreError;
 
@@ -60,13 +61,43 @@ pub enum ChildStdin {
     Piped,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineCommand {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub current_dir: PathBuf,
     pub environment: BTreeMap<OsString, OsString>,
     pub stdin: ChildStdin,
+}
+
+impl std::fmt::Debug for EngineCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let args = self
+            .args
+            .iter()
+            .map(|value| {
+                value.to_str().map_or_else(
+                    || "[non-utf8]".to_owned(),
+                    |value| {
+                        if value.contains("://") {
+                            redact_url(value)
+                        } else {
+                            value.to_owned()
+                        }
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let environment_keys = self.environment.keys().collect::<Vec<_>>();
+        formatter
+            .debug_struct("EngineCommand")
+            .field("program", &self.program)
+            .field("args", &args)
+            .field("current_dir", &self.current_dir)
+            .field("environment_keys", &environment_keys)
+            .field("stdin", &self.stdin)
+            .finish()
+    }
 }
 
 impl EngineCommand {
@@ -159,10 +190,11 @@ pub struct ProcessLine {
     pub text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProcessSpec {
     pub command: EngineCommand,
     pub input: Option<Vec<u8>>,
+    pub sensitive_input: bool,
     pub timeout: Duration,
     pub cancel_grace: Duration,
     pub max_line_bytes: usize,
@@ -176,12 +208,29 @@ impl ProcessSpec {
         Self {
             command,
             input: None,
+            sensitive_input: false,
             timeout: Duration::from_secs(24 * 60 * 60),
             cancel_grace: Duration::from_secs(5),
             max_line_bytes: 1024 * 1024,
             max_output_bytes: 8 * 1024 * 1024,
             max_lines: 50_000,
         }
+    }
+}
+
+impl std::fmt::Debug for ProcessSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessSpec")
+            .field("command", &self.command)
+            .field("input_bytes", &self.input.as_ref().map(Vec::len))
+            .field("sensitive_input", &self.sensitive_input)
+            .field("timeout", &self.timeout)
+            .field("cancel_grace", &self.cancel_grace)
+            .field("max_line_bytes", &self.max_line_bytes)
+            .field("max_output_bytes", &self.max_output_bytes)
+            .field("max_lines", &self.max_lines)
+            .finish()
     }
 }
 
@@ -205,13 +254,17 @@ impl ProcessSupervisor {
         let process_id = child.id();
         let tree_guard = ProcessTreeGuard::attach(process_id)?;
 
-        if let Some(input) = spec.input {
+        if let Some(mut input) = spec.input {
+            let sensitive_input = spec.sensitive_input;
             let mut stdin = child.stdin.take().ok_or_else(|| {
                 CoreError::InvalidInput("process input requires piped stdin".into())
             })?;
             tokio::spawn(async move {
                 let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, &input).await;
                 let _ = tokio::io::AsyncWriteExt::shutdown(&mut stdin).await;
+                if sensitive_input {
+                    input.zeroize();
+                }
             });
         }
 
@@ -584,6 +637,13 @@ mod tests {
     fn removes_url_secrets_before_logging() {
         let value = redact_url("https://user:secret@example.com/file?token=abc#part");
         assert_eq!(value, "https://example.com/file");
+        let temporary = tempfile::tempdir().unwrap();
+        let command = EngineCommand::new(&std::env::current_exe().unwrap(), temporary.path())
+            .unwrap()
+            .arg("https://user:secret@example.com/file?token=abc");
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("token"));
     }
 
     #[tokio::test]

@@ -36,6 +36,25 @@ pub struct PackConsentRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateReceipt {
+    pub target_name: String,
+    pub version: String,
+    pub security_sequence: u64,
+    pub length: u64,
+    pub sha256: String,
+    pub metadata_json: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateJournalRecord {
+    pub transaction_id: String,
+    pub state: String,
+    pub journal_json: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone)]
 pub struct JobStore {
     connection: Arc<Mutex<Connection>>,
@@ -464,6 +483,184 @@ impl JobStore {
             .map_err(CoreError::from)
     }
 
+    pub fn save_update_receipt(&self, receipt: &UpdateReceipt) -> Result<(), CoreError> {
+        if receipt.target_name.trim().is_empty()
+            || receipt.version.trim().is_empty()
+            || receipt.length == 0
+            || !is_sha256(&receipt.sha256)
+            || serde_json::from_str::<serde_json::Value>(&receipt.metadata_json).is_err()
+        {
+            return Err(CoreError::SupplyChain(
+                "update receipt contains invalid authorization data".into(),
+            ));
+        }
+        let sequence = i64::try_from(receipt.security_sequence)
+            .map_err(|_| CoreError::SupplyChain("update sequence is too large".into()))?;
+        let length = i64::try_from(receipt.length)
+            .map_err(|_| CoreError::SupplyChain("update artifact is too large".into()))?;
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction()?;
+        let existing = transaction
+            .query_row(
+                "SELECT version, security_sequence, length, sha256, metadata_json, created_at
+                 FROM update_receipts WHERE target_name = ?1",
+                [&receipt.target_name],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((version, current_sequence, current_length, sha256, metadata, _created_at)) =
+            existing
+        {
+            if sequence < current_sequence {
+                return Err(CoreError::SupplyChain(
+                    "update receipt rollback was rejected".into(),
+                ));
+            }
+            if sequence == current_sequence {
+                let exact_replay = version == receipt.version
+                    && current_length == length
+                    && sha256.eq_ignore_ascii_case(&receipt.sha256)
+                    && metadata == receipt.metadata_json;
+                if exact_replay {
+                    return Ok(());
+                }
+                return Err(CoreError::SupplyChain(
+                    "update receipt sequence was replayed with different content".into(),
+                ));
+            }
+        }
+        transaction.execute(
+            "
+            INSERT INTO update_receipts
+                (target_name, version, security_sequence, length, sha256, metadata_json, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(target_name) DO UPDATE SET
+                version = excluded.version,
+                security_sequence = excluded.security_sequence,
+                length = excluded.length,
+                sha256 = excluded.sha256,
+                metadata_json = excluded.metadata_json,
+                created_at = excluded.created_at
+            ",
+            params![
+                receipt.target_name,
+                receipt.version,
+                sequence,
+                length,
+                receipt.sha256.to_ascii_lowercase(),
+                receipt.metadata_json,
+                receipt.created_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn get_update_receipt(
+        &self,
+        target_name: &str,
+    ) -> Result<Option<UpdateReceipt>, CoreError> {
+        self.connection
+            .lock()
+            .query_row(
+                "SELECT target_name, version, security_sequence, length, sha256, metadata_json,
+                        created_at
+                 FROM update_receipts WHERE target_name = ?1",
+                [target_name],
+                |row| {
+                    let sequence = row.get::<_, i64>(2)?;
+                    let length = row.get::<_, i64>(3)?;
+                    Ok(UpdateReceipt {
+                        target_name: row.get(0)?,
+                        version: row.get(1)?,
+                        security_sequence: sequence
+                            .try_into()
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, sequence))?,
+                        length: length
+                            .try_into()
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, length))?,
+                        sha256: row.get(4)?,
+                        metadata_json: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(CoreError::from)
+    }
+
+    pub fn record_update_journal(&self, journal: &UpdateJournalRecord) -> Result<(), CoreError> {
+        if uuid::Uuid::parse_str(&journal.transaction_id).is_err()
+            || !is_update_state(&journal.state)
+            || serde_json::from_str::<serde_json::Value>(&journal.journal_json).is_err()
+        {
+            return Err(CoreError::SupplyChain(
+                "update journal contains invalid transaction data".into(),
+            ));
+        }
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction()?;
+        let current = transaction
+            .query_row(
+                "SELECT state FROM update_journals WHERE transaction_id = ?1",
+                [&journal.transaction_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if current
+            .as_deref()
+            .is_some_and(|state| !valid_update_transition(state, &journal.state))
+        {
+            return Err(CoreError::SupplyChain(
+                "update journal state transition was rejected".into(),
+            ));
+        }
+        transaction.execute(
+            "
+            INSERT INTO update_journals (transaction_id, state, journal_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(transaction_id) DO UPDATE SET
+                state = excluded.state,
+                journal_json = excluded.journal_json,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                journal.transaction_id,
+                journal.state,
+                journal.journal_json,
+                journal.updated_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_update_journals(&self) -> Result<Vec<UpdateJournalRecord>, CoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT transaction_id, state, journal_json, updated_at
+             FROM update_journals ORDER BY datetime(updated_at) DESC, transaction_id DESC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(UpdateJournalRecord {
+                transaction_id: row.get(0)?,
+                state: row.get(1)?,
+                journal_json: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
     pub fn trust_sftp_host_key(&self, record: &SftpHostKeyRecord) -> Result<(), CoreError> {
         self.connection.lock().execute(
             "
@@ -487,6 +684,38 @@ impl JobStore {
                 record.revoked,
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn replace_sftp_host_key(&self, record: &SftpHostKeyRecord) -> Result<(), CoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE trusted_sftp_keys SET revoked = 1 WHERE host = ?1 AND port = ?2",
+            params![record.host, i64::from(record.port)],
+        )?;
+        transaction.execute(
+            "
+            INSERT INTO trusted_sftp_keys (
+                host, port, algorithm, raw_key_base64, fingerprint_sha256,
+                first_seen, last_verified, revoked
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+            ON CONFLICT(host, port, algorithm, raw_key_base64) DO UPDATE SET
+                fingerprint_sha256 = excluded.fingerprint_sha256,
+                last_verified = excluded.last_verified,
+                revoked = 0
+            ",
+            params![
+                record.host,
+                i64::from(record.port),
+                record.algorithm,
+                record.raw_key_base64,
+                record.fingerprint_sha256,
+                record.first_seen,
+                record.last_verified,
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -532,6 +761,55 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn is_update_state(value: &str) -> bool {
+    matches!(
+        value,
+        "prepared"
+            | "download_failed"
+            | "downloaded"
+            | "applying"
+            | "waiting_for_exit"
+            | "swapped"
+            | "launched"
+            | "healthy"
+            | "committed"
+            | "rolled_back"
+            | "aborted"
+            | "rollback_failed"
+    )
+}
+
+fn valid_update_transition(current: &str, next: &str) -> bool {
+    current == next
+        || matches!(
+            (current, next),
+            ("prepared", "downloaded" | "download_failed")
+                | ("download_failed", "downloaded")
+                | ("downloaded", "applying")
+                | (
+                    "applying",
+                    "waiting_for_exit"
+                        | "swapped"
+                        | "launched"
+                        | "healthy"
+                        | "committed"
+                        | "rolled_back"
+                        | "aborted"
+                        | "rollback_failed"
+                )
+                | ("waiting_for_exit", "swapped" | "aborted")
+                | (
+                    "swapped",
+                    "launched" | "healthy" | "rolled_back" | "rollback_failed"
+                )
+                | (
+                    "launched",
+                    "healthy" | "committed" | "rolled_back" | "rollback_failed"
+                )
+                | ("healthy", "committed" | "rolled_back" | "rollback_failed")
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::job::JobSpec;
@@ -548,6 +826,7 @@ mod tests {
             preferred_kind: None,
             selected_format: None,
             subtitle_languages: Vec::new(),
+            selected_playlist_entries: None,
             overwrite: false,
         })
     }
@@ -610,6 +889,35 @@ mod tests {
     }
 
     #[test]
+    fn replacing_an_sftp_host_key_revokes_the_previous_identity() {
+        let store = JobStore::open_in_memory().unwrap();
+        let previous = SftpHostKeyRecord {
+            host: "sftp.example.test".into(),
+            port: 22,
+            algorithm: "ssh-ed25519".into(),
+            raw_key_base64: "b2xk".into(),
+            fingerprint_sha256: "11".repeat(32),
+            first_seen: "2026-08-09T00:00:00Z".into(),
+            last_verified: "2026-08-09T00:00:00Z".into(),
+            revoked: false,
+        };
+        let replacement = SftpHostKeyRecord {
+            raw_key_base64: "bmV3".into(),
+            fingerprint_sha256: "22".repeat(32),
+            last_verified: "2026-08-15T00:00:00Z".into(),
+            ..previous.clone()
+        };
+        store.trust_sftp_host_key(&previous).unwrap();
+        store.replace_sftp_host_key(&replacement).unwrap();
+        assert_eq!(
+            store
+                .trusted_sftp_host_keys(&replacement.host, replacement.port)
+                .unwrap(),
+            vec![replacement]
+        );
+    }
+
+    #[test]
     fn persists_pack_consent_without_secrets() {
         let store = JobStore::open_in_memory().unwrap();
         let consent = PackConsentRecord {
@@ -643,5 +951,70 @@ mod tests {
         rollback.security_sequence = 2;
         assert!(store.commit_pack_activation(&rollback).is_err());
         assert_eq!(store.pack_security_high_water("video-core").unwrap(), 3);
+    }
+
+    #[test]
+    fn update_receipts_are_monotonic_and_exact_replays_are_idempotent() {
+        let store = JobStore::open_in_memory().unwrap();
+        let receipt = UpdateReceipt {
+            target_name: "core/windows-x64.json".into(),
+            version: "0.1.0-beta.2".into(),
+            security_sequence: 2,
+            length: 42,
+            sha256: "44".repeat(32),
+            metadata_json: r#"{"schema_version":1}"#.into(),
+            created_at: "2026-08-14T00:00:00Z".into(),
+        };
+        store.save_update_receipt(&receipt).unwrap();
+        store.save_update_receipt(&receipt).unwrap();
+        assert_eq!(
+            store.get_update_receipt(&receipt.target_name).unwrap(),
+            Some(receipt.clone())
+        );
+
+        let mut replay = receipt.clone();
+        replay.sha256 = "55".repeat(32);
+        assert!(store.save_update_receipt(&replay).is_err());
+        let mut rollback = receipt;
+        rollback.security_sequence = 1;
+        assert!(store.save_update_receipt(&rollback).is_err());
+    }
+
+    #[test]
+    fn update_journals_round_trip_newest_first() {
+        let store = JobStore::open_in_memory().unwrap();
+        let first = UpdateJournalRecord {
+            transaction_id: uuid::Uuid::new_v4().to_string(),
+            state: "prepared".into(),
+            journal_json: r#"{"state":"prepared"}"#.into(),
+            updated_at: "2026-08-14T00:00:00Z".into(),
+        };
+        let second = UpdateJournalRecord {
+            transaction_id: uuid::Uuid::new_v4().to_string(),
+            state: "committed".into(),
+            journal_json: r#"{"state":"committed"}"#.into(),
+            updated_at: "2026-08-14T01:00:00Z".into(),
+        };
+        store.record_update_journal(&first).unwrap();
+        store.record_update_journal(&second).unwrap();
+        assert_eq!(store.list_update_journals().unwrap(), vec![second, first]);
+    }
+
+    #[test]
+    fn update_journal_rejects_skipped_and_terminal_transitions() {
+        let store = JobStore::open_in_memory().unwrap();
+        let transaction_id = uuid::Uuid::new_v4().to_string();
+        let record = |state: &str| UpdateJournalRecord {
+            transaction_id: transaction_id.clone(),
+            state: state.into(),
+            journal_json: format!(r#"{{"state":"{state}"}}"#),
+            updated_at: "2026-08-15T00:00:00Z".into(),
+        };
+        store.record_update_journal(&record("prepared")).unwrap();
+        assert!(store.record_update_journal(&record("applying")).is_err());
+        store.record_update_journal(&record("downloaded")).unwrap();
+        store.record_update_journal(&record("applying")).unwrap();
+        store.record_update_journal(&record("committed")).unwrap();
+        assert!(store.record_update_journal(&record("rolled_back")).is_err());
     }
 }

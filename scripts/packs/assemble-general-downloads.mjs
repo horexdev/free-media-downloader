@@ -3,10 +3,12 @@ import { createWriteStream } from "node:fs";
 import {
   chmod,
   copyFile,
+  lstat,
   mkdir,
   readFile,
   rm,
   stat,
+  readdir,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -177,6 +179,7 @@ await writeFile(
   ) + "\n",
   { encoding: "utf8", flag: "wx", mode: 0o600 },
 );
+const files = await collectFiles(payload, new Set([aria2Entrypoint, workerEntrypoint]));
 
 const template = join(work, "manifest-template.json");
 await writeJson(template, {
@@ -218,7 +221,7 @@ await writeJson(template, {
       },
   ],
   components,
-  files: [],
+  files,
   self_tests: [
     { engine_id: "aria2", expected_version: aria2.version, timeout_seconds: 20 },
     {
@@ -515,4 +518,46 @@ async function sha256File(path) {
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+async function collectFiles(root, executableFiles) {
+  const result = [];
+  for await (const entry of walkFiles(root, "")) {
+    const absolutePath = join(root, entry);
+    const metadata = await lstat(absolutePath);
+    if (!metadata.isFile()) fail(`manifest collection allows regular files only: ${entry}`);
+    const role = collectRole(entry, executableFiles);
+    result.push({
+      path: entry,
+      size: metadata.size,
+      sha256: await sha256File(absolutePath),
+      role,
+      executable: role === "Executable",
+    });
+  }
+  return result;
+}
+
+async function* walkFiles(root, relative) {
+  const entries = await readdir(join(root, relative));
+  entries.sort((left, right) => left.localeCompare(right));
+  for (const entry of entries) {
+    const entryPath = `${relative ? `${relative}/${entry}` : entry}`;
+    const item = await lstat(join(root, entryPath));
+    if (item.isDirectory()) {
+      yield* walkFiles(root, entryPath);
+    } else if (item.isFile()) {
+      yield entryPath;
+    } else {
+      fail(`unsupported file type in general-downloads payload: ${entryPath}`);
+    }
+  }
+}
+
+function collectRole(relativePath, executableFiles) {
+  if (executableFiles.has(relativePath)) return "Executable";
+  if (relativePath.startsWith("LICENSES/")) return "License";
+  return ["sources.json", "sbom.spdx.json", "provenance.intoto.jsonl", "manifest.json"].includes(relativePath)
+    ? "Metadata"
+    : "Resource";
 }

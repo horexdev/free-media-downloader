@@ -242,6 +242,19 @@ fn download_http_or_ftp(
     easy.low_speed_limit(1024)?;
     easy.low_speed_time(Duration::from_secs(30))?;
     easy.progress(true)?;
+    #[cfg(feature = "test-fixtures")]
+    if parsed.scheme() == "https" {
+        let fixture_ca = std::env::var_os("FMD_CURL_FIXTURE_CA")
+            .map(std::path::PathBuf::from)
+            .ok_or(crate::RequestError::InvalidCredentials)?;
+        if !fixture_ca.is_absolute() || !fixture_ca.is_file() {
+            return Err(crate::RequestError::InvalidCredentials.into());
+        }
+        easy.cainfo(&fixture_ca)?;
+        let mut ssl_options = curl::easy::SslOpt::new();
+        ssl_options.revoke_best_effort(true);
+        easy.ssl_options(&ssl_options)?;
+    }
     if is_http {
         easy.http_version(HttpVersion::V2TLS)?;
     }
@@ -389,7 +402,8 @@ mod native_sftp {
     use super::*;
 
     const CURLSSH_AUTH_PASSWORD: c_long = 1 << 1;
-    const CURLSSH_AUTH_PUBLICKEY: c_long = 1 << 2;
+    const CURLSSH_AUTH_PUBLICKEY: c_long = 1 << 0;
+    const CURLSSH_AUTH_NONE: c_long = 0;
 
     #[repr(C)]
     struct CallbackState {
@@ -499,6 +513,18 @@ mod native_sftp {
         easy.timeout(Duration::from_secs(30))?;
         easy.fresh_connect(true)?;
         easy.forbid_reuse(true)?;
+        easy.username("fmd-host-key-probe")?;
+        let auth_code = unsafe {
+            fmd_curl_set_ssh_auth(
+                easy.raw().cast(),
+                CURLSSH_AUTH_NONE,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if auth_code != 0 {
+            return Err(TransferError::BackendUnavailable);
+        }
         let mut context = HostKeyContext {
             mode: HostKeyMode::Probe,
             observed: None,
@@ -664,7 +690,7 @@ fn download_sftp(
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::thread;
 
@@ -754,6 +780,27 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[test]
+    fn downloads_local_ftp_file() {
+        let (url, server) = serve_ftp(b"hello".to_vec());
+        let temporary = tempdir().unwrap();
+        let destination = temporary.path().join("file.part");
+        execute(
+            WorkerRequest::Download {
+                url,
+                destination: destination.to_string_lossy().into_owned(),
+                resume_from: 0,
+                expected_validator: None,
+                credentials: None,
+                trusted_host_key: None,
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), b"hello");
+        server.join().unwrap();
+    }
+
     fn serve(responses: Vec<String>) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -769,5 +816,60 @@ mod tests {
             }
         });
         (format!("http://{address}"), handle)
+    }
+
+    fn serve_ftp(payload: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+        let control = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = control.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = control.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            stream.write_all(b"220 fixture ready\r\n").unwrap();
+            let mut data_listener = None;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let command = line.split_whitespace().next().unwrap_or("");
+                match command.to_ascii_uppercase().as_str() {
+                    "USER" => stream.write_all(b"331 password required\r\n").unwrap(),
+                    "PASS" => stream.write_all(b"230 logged in\r\n").unwrap(),
+                    "SYST" => stream.write_all(b"215 UNIX Type: L8\r\n").unwrap(),
+                    "PWD" => stream.write_all(b"257 \"/\"\r\n").unwrap(),
+                    "TYPE" => stream.write_all(b"200 type set\r\n").unwrap(),
+                    "SIZE" => stream
+                        .write_all(format!("213 {}\r\n", payload.len()).as_bytes())
+                        .unwrap(),
+                    "EPSV" => {
+                        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                        let port = listener.local_addr().unwrap().port();
+                        data_listener = Some(listener);
+                        stream
+                            .write_all(
+                                format!("229 Entering Extended Passive Mode (|||{port}|)\r\n")
+                                    .as_bytes(),
+                            )
+                            .unwrap();
+                    }
+                    "RETR" => {
+                        stream.write_all(b"150 opening data\r\n").unwrap();
+                        let (mut data, _) = data_listener.take().unwrap().accept().unwrap();
+                        data.write_all(&payload).unwrap();
+                        drop(data);
+                        stream.write_all(b"226 transfer complete\r\n").unwrap();
+                    }
+                    "QUIT" => {
+                        stream.write_all(b"221 bye\r\n").unwrap();
+                        break;
+                    }
+                    _ => stream.write_all(b"200 ok\r\n").unwrap(),
+                }
+            }
+        });
+        (format!("ftp://{address}/file"), handle)
     }
 }

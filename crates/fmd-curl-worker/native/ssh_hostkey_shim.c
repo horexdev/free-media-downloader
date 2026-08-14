@@ -1,6 +1,10 @@
 #include <curl/curl.h>
 #include <stddef.h>
 
+_Static_assert(CURLSSH_AUTH_PUBLICKEY == (1L << 0), "unexpected libcurl public-key auth mask");
+_Static_assert(CURLSSH_AUTH_PASSWORD == (1L << 1), "unexpected libcurl password auth mask");
+_Static_assert(CURLSSH_AUTH_NONE == 0L, "unexpected libcurl no-auth mask");
+
 typedef int (*fmd_hostkey_callback)(void *context, int key_type,
                                     const unsigned char *key, size_t key_len);
 typedef struct {

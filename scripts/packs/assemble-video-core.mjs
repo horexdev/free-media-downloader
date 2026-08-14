@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
@@ -141,6 +141,7 @@ await writeFile(
   JSON.stringify(provenance(recipe, options.target, binarySubjects, ytAsset, ejs, denoAsset)) + "\n",
   { encoding: "utf8", flag: "wx", mode: 0o600 },
 );
+const files = await collectFiles(payload, new Set([ytEntrypoint, denoEntrypoint]));
 
 const template = join(work, "manifest-template.json");
 await writeJson(template, {
@@ -170,7 +171,7 @@ await writeJson(template, {
     manifestSourceComponent("yt-dlp-ejs", ejs),
     manifestComponent("deno", deno, denoAsset),
   ],
-  files: [],
+  files,
   self_tests: [{
     engine_id: "yt-dlp",
     expected_version: ytDlp.version,
@@ -540,4 +541,46 @@ function parseArguments(values) {
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+async function collectFiles(root, executableFiles) {
+  const result = [];
+  for await (const entry of walkFiles(root, "")) {
+    const absolutePath = join(root, entry);
+    const metadata = await lstat(absolutePath);
+    if (!metadata.isFile()) fail(`manifest collection allows regular files only: ${entry}`);
+    const role = collectRole(entry, executableFiles);
+    result.push({
+      path: entry,
+      size: metadata.size,
+      sha256: await sha256File(absolutePath),
+      role,
+      executable: role === "Executable",
+    });
+  }
+  return result;
+}
+
+async function* walkFiles(root, relative) {
+  const entries = await readdir(join(root, relative));
+  entries.sort((left, right) => left.localeCompare(right));
+  for (const entry of entries) {
+    const entryPath = `${relative ? `${relative}/${entry}` : entry}`;
+    const item = await lstat(join(root, entryPath));
+    if (item.isDirectory()) {
+      yield* walkFiles(root, entryPath);
+    } else if (item.isFile()) {
+      yield entryPath;
+    } else {
+      fail(`unsupported file type in video-core payload: ${entryPath}`);
+    }
+  }
+}
+
+function collectRole(relativePath, executableFiles) {
+  if (executableFiles.has(relativePath)) return "Executable";
+  if (relativePath.startsWith("LICENSES/")) return "License";
+  return ["sources.json", "sbom.spdx.json", "provenance.intoto.jsonl", "manifest.json"].includes(relativePath)
+    ? "Metadata"
+    : "Resource";
 }

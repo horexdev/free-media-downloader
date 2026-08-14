@@ -1,4 +1,4 @@
-import { cpSync, copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -34,9 +34,28 @@ if (target.startsWith("windows-")) {
 
   const setupOut = resolve(outDir, `${prefix}-setup.exe`);
   const portableOut = resolve(outDir, `${prefix}-portable.zip`);
+  const updateOut = resolve(outDir, `${prefix}-update.zip`);
   copyFileSync(installer, setupOut);
-  zipSingleFilePortable(setupOut, portableOut);
-  outputs.push(setupOut, portableOut);
+  const releaseDir = resolve(workspace, "src-tauri", "target", triple, "release");
+  const app = pickFirstFile(releaseDir, /^fmd-app\.exe$/i);
+  const launcher = pickFirstFile(releaseDir, /^fmd-launcher\.exe$/i);
+  if (!app || !launcher) fail(`portable binaries are missing in ${releaseDir}`);
+  const version = readWorkspaceVersion();
+  const portableRoot = resolve(outDir, "portable-staging");
+  const payloadRoot = resolve(portableRoot, "app", version);
+  mkdirSync(payloadRoot, { recursive: true });
+  mkdirSync(resolve(portableRoot, "state"), { recursive: true });
+  copyFileSync(app, resolve(payloadRoot, "fmd-app.exe"));
+  copyFileSync(launcher, resolve(portableRoot, "fmd-launcher.exe"));
+  writeFileSync(resolve(portableRoot, "portable.json"), "{}\n");
+  writeFileSync(resolve(portableRoot, "state", "current.json"), `${JSON.stringify({
+    version,
+    executable: "fmd-app.exe",
+  }, null, 2)}\n`);
+  zipDirectory(portableRoot, portableOut);
+  zipDirectory(payloadRoot, updateOut);
+  rmSync(portableRoot, { force: true, recursive: true });
+  outputs.push(setupOut, portableOut, updateOut);
 }
 
 if (target.startsWith("macos-")) {
@@ -70,19 +89,26 @@ if (target.startsWith("linux-")) {
 
 console.log(JSON.stringify({ target, outDir, outputs }, null, 2));
 
-function zipSingleFilePortable(inputFile, outputZip) {
+function zipDirectory(inputDirectory, outputZip) {
   if (process.platform === "win32") {
     const powershell = [
       "powershell",
       "-NoProfile",
       "-Command",
-      `Compress-Archive -Path ${quoteShell(inputFile)} -DestinationPath ${quoteShell(outputZip)} -Force`,
+      `$items = Join-Path ${quoteShell(inputDirectory)} '*'; Compress-Archive -Path $items -DestinationPath ${quoteShell(outputZip)} -Force`,
     ];
     runCommand(powershell, { cwd: outDir });
     return;
   }
 
-  runCommand(["zip", "-q", "-j", outputZip, inputFile], {});
+  runCommand(["zip", "-q", "-r", outputZip, "."], { cwd: inputDirectory });
+}
+
+function readWorkspaceVersion() {
+  const manifest = readFileSync(resolve(workspace, "Cargo.toml"), "utf8");
+  const match = manifest.match(/\[workspace\.package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/);
+  if (!match) fail("workspace version is missing from Cargo.toml");
+  return match[1];
 }
 
 function runDittoZip(inputApp, outputZip) {

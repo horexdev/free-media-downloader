@@ -12,6 +12,7 @@ build = "build.rs"
 [features]
 default = []
 native-stack = []
+test-fixtures = []
 
 [dependencies]
 curl = { version = "0.4.50", features = ["http2", "protocol-ftp", "static-curl"] }

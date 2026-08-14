@@ -36,6 +36,34 @@ pub struct AuthorizedExternalTarget {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedDescriptorTarget {
+    pub name: String,
+    pub component: String,
+    pub version: String,
+    pub target: TargetId,
+    pub security_sequence: u64,
+    pub pack_id: Option<String>,
+    pub descriptor_length: u64,
+    pub descriptor_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDescriptorV1 {
+    pub schema_version: u32,
+    pub target_name: String,
+    pub component: String,
+    pub version: String,
+    pub target: TargetId,
+    pub security_sequence: u64,
+    pub pack_id: Option<String>,
+    pub artifact_url: Url,
+    pub artifact_length: u64,
+    pub artifact_sha256: String,
+    pub unsigned: bool,
+}
+
 impl TufRepository {
     pub async fn load(
         trusted_root: &[u8],
@@ -144,6 +172,128 @@ impl TufRepository {
             length,
             sha256: format!("{:x}", digest.finalize()),
         })
+    }
+
+    pub fn descriptor_target(&self, name: &str) -> Result<AuthorizedDescriptorTarget, CoreError> {
+        let target_name =
+            TargetName::new(name).map_err(|error| CoreError::SupplyChain(error.to_string()))?;
+        let (_, target) = self
+            .repository
+            .targets()
+            .signed
+            .targets_iter()
+            .find(|(candidate, _)| **candidate == target_name)
+            .ok_or_else(|| CoreError::SupplyChain("target was not found".into()))?;
+        let custom = &target.custom;
+        let text = |field: &str| {
+            custom
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    CoreError::SupplyChain(format!("target custom field '{field}' is missing"))
+                })
+        };
+        let component = text("component")?;
+        if !matches!(component.as_str(), "core" | "engine_pack") {
+            return Err(CoreError::SupplyChain(
+                "target component is not supported".into(),
+            ));
+        }
+        let security_sequence = custom
+            .get("security_sequence")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| CoreError::SupplyChain("target security_sequence is missing".into()))?;
+        let target_id = text("target")?
+            .parse()
+            .map_err(|_| CoreError::SupplyChain("target platform is invalid".into()))?;
+        let pack_id = custom
+            .get("pack_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        if component == "engine_pack" && pack_id.is_none() {
+            return Err(CoreError::SupplyChain(
+                "engine target pack_id is missing".into(),
+            ));
+        }
+        if component == "core" && pack_id.is_some() {
+            return Err(CoreError::SupplyChain(
+                "core target cannot declare pack_id".into(),
+            ));
+        }
+        Ok(AuthorizedDescriptorTarget {
+            name: name.to_owned(),
+            component,
+            version: text("version")?,
+            target: target_id,
+            security_sequence,
+            pack_id,
+            descriptor_length: target.length,
+            descriptor_sha256: encode_hex(target.hashes.sha256.as_ref()),
+        })
+    }
+
+    pub fn descriptor_targets(&self) -> Result<Vec<AuthorizedDescriptorTarget>, CoreError> {
+        self.repository
+            .targets()
+            .signed
+            .targets_iter()
+            .map(|(name, _)| self.descriptor_target(name.resolved()))
+            .collect()
+    }
+
+    pub async fn read_artifact_descriptor(
+        &self,
+        authorization: &AuthorizedDescriptorTarget,
+        max_bytes: u64,
+    ) -> Result<ArtifactDescriptorV1, CoreError> {
+        if authorization.descriptor_length > max_bytes {
+            return Err(CoreError::SupplyChain(
+                "update descriptor exceeds the configured size limit".into(),
+            ));
+        }
+        let name = TargetName::new(&authorization.name)
+            .map_err(|error| CoreError::SupplyChain(error.to_string()))?;
+        let stream = self
+            .repository
+            .read_target(&name)
+            .await
+            .map_err(|error| CoreError::SupplyChain(error.to_string()))?
+            .ok_or_else(|| CoreError::SupplyChain("target descriptor was not found".into()))?;
+        futures_util::pin_mut!(stream);
+        let mut bytes = Vec::with_capacity(authorization.descriptor_length as usize);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| CoreError::SupplyChain(error.to_string()))?;
+            if bytes.len().saturating_add(chunk.len()) as u64 > max_bytes {
+                return Err(CoreError::SupplyChain(
+                    "update descriptor exceeds the configured size limit".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let descriptor: ArtifactDescriptorV1 = serde_json::from_slice(&bytes)?;
+        descriptor.validate_against(authorization)?;
+        Ok(descriptor)
+    }
+
+    pub async fn download_artifact(
+        &self,
+        descriptor: &ArtifactDescriptorV1,
+        destination: &Path,
+        allowed_https_hosts: &[&str],
+    ) -> Result<DownloadedTarget, CoreError> {
+        let authorization = AuthorizedExternalTarget {
+            name: descriptor.target_name.clone(),
+            pack_id: descriptor.pack_id.clone().unwrap_or_else(|| "core".into()),
+            pack_version: descriptor.version.clone(),
+            target: descriptor.target,
+            security_sequence: descriptor.security_sequence,
+            download_url: descriptor.artifact_url.clone(),
+            length: descriptor.artifact_length,
+            sha256: descriptor.artifact_sha256.clone(),
+        };
+        self.download_external_target(&authorization, destination, allowed_https_hosts)
+            .await
     }
 
     pub fn external_target(&self, name: &str) -> Result<AuthorizedExternalTarget, CoreError> {
@@ -269,6 +419,43 @@ impl TufRepository {
     }
 }
 
+impl ArtifactDescriptorV1 {
+    pub fn validate_against(
+        &self,
+        authorization: &AuthorizedDescriptorTarget,
+    ) -> Result<(), CoreError> {
+        if self.schema_version != 1
+            || self.target_name != authorization.name
+            || self.component != authorization.component
+            || self.version != authorization.version
+            || self.target != authorization.target
+            || self.security_sequence != authorization.security_sequence
+            || self.pack_id != authorization.pack_id
+            || self.artifact_length == 0
+            || !is_sha256(&self.artifact_sha256)
+        {
+            return Err(CoreError::SupplyChain(
+                "artifact descriptor does not match its TUF authorization".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn external_authorization(&self) -> AuthorizedExternalTarget {
+        AuthorizedExternalTarget {
+            name: self.target_name.clone(),
+            pack_id: self.pack_id.clone().unwrap_or_else(|| "core".into()),
+            pack_version: self.version.clone(),
+            target: self.target,
+            security_sequence: self.security_sequence,
+            download_url: self.artifact_url.clone(),
+            length: self.artifact_length,
+            sha256: self.artifact_sha256.clone(),
+        }
+    }
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -277,6 +464,10 @@ fn encode_hex(bytes: &[u8]) -> String {
         output.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn validate_production_origin(url: &Url, allowed_hosts: &[&str]) -> Result<(), CoreError> {
@@ -842,6 +1033,7 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CoreErr
     file.write_all(&serde_json::to_vec_pretty(value)?)?;
     file.flush()?;
     file.sync_all()?;
+    drop(file);
     replace_file(&candidate, path)?;
     sync_directory(parent)?;
     Ok(())
@@ -1033,6 +1225,29 @@ mod tests {
         );
         assert!(installer.install_archive(&archive_path).is_err());
         assert!(!temporary.path().join("escape").exists());
+    }
+
+    #[test]
+    fn rejects_zip_symbolic_links() {
+        let temporary = tempdir().unwrap();
+        let archive_path = temporary.path().join("link.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "bin/link",
+                SimpleFileOptions::default().unix_permissions(0o120777),
+            )
+            .unwrap();
+        archive.write_all(b"../outside").unwrap();
+        archive.finish().unwrap();
+        let installer = PackInstaller::new(
+            PackLayout::new(temporary.path().join("engines")),
+            TargetId::current().unwrap(),
+            ExtractionLimits::default(),
+        );
+        assert!(installer.install_archive(&archive_path).is_err());
+        assert!(!temporary.path().join("outside").exists());
     }
 
     #[test]
