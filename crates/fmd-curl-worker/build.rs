@@ -28,11 +28,14 @@ fn main() {
         panic!("FMD_CURL_STATIC_PREFIX does not contain the pinned static curl SDK")
     }
 
-    cc::Build::new()
-        .file("native/ssh_hostkey_shim.c")
+    let mut shim = cc::Build::new();
+    shim.file("native/ssh_hostkey_shim.c")
         .include(&include)
-        .warnings_into_errors(true)
-        .compile("fmd_curl_shim");
+        .warnings_into_errors(true);
+    if target.contains("windows-msvc") {
+        shim.define("CURL_STATICLIB", None);
+    }
+    shim.compile("fmd_curl_shim");
     println!("cargo:rustc-link-search=native={}", library.display());
     emit_native_dependencies(&library);
     println!("cargo:rustc-cfg=fmd_native_sftp");
@@ -48,7 +51,9 @@ fn emit_native_dependencies(library: &std::path::Path) {
         for name in ["libssl", "libcrypto", "nghttp2", "zs"] {
             println!("cargo:rustc-link-lib=static={name}");
         }
-        for name in ["bcrypt", "crypt32", "normaliz", "ws2_32"] {
+        for name in [
+            "advapi32", "bcrypt", "crypt32", "iphlpapi", "normaliz", "ws2_32",
+        ] {
             println!("cargo:rustc-link-lib={name}");
         }
     } else if target.contains("apple-darwin") {

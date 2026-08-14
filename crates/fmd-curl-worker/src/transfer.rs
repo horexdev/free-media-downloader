@@ -479,12 +479,12 @@ mod native_sftp {
     fn configure_hostkey(
         easy: &Easy,
         context: &mut HostKeyContext,
-    ) -> Result<CallbackState, TransferError> {
-        let mut state = CallbackState {
+    ) -> Result<Box<CallbackState>, TransferError> {
+        let mut state = Box::new(CallbackState {
             callback: hostkey_callback,
             context: (context as *mut HostKeyContext).cast(),
-        };
-        let code = unsafe { fmd_curl_set_hostkey_callback(easy.raw().cast(), &mut state) };
+        });
+        let code = unsafe { fmd_curl_set_hostkey_callback(easy.raw().cast(), state.as_mut()) };
         if code != 0 {
             return Err(TransferError::BackendUnavailable);
         }
@@ -519,11 +519,11 @@ mod native_sftp {
         if auth_code != 0 {
             return Err(TransferError::BackendUnavailable);
         }
-        let mut context = HostKeyContext {
+        let mut context = Box::new(HostKeyContext {
             mode: HostKeyMode::Probe,
             observed: None,
-        };
-        let _state = configure_hostkey(&easy, &mut context)?;
+        });
+        let _state = configure_hostkey(&easy, context.as_mut())?;
         let result = easy.perform();
         let observed = context
             .observed
@@ -558,11 +558,11 @@ mod native_sftp {
         if resume_from > 0 {
             easy.resume_from(resume_from)?;
         }
-        let mut context = HostKeyContext {
+        let mut context = Box::new(HostKeyContext {
             mode: HostKeyMode::Verify(trusted),
             observed: None,
-        };
-        let _state = configure_hostkey(&easy, &mut context)?;
+        });
+        let _state = configure_hostkey(&easy, context.as_mut())?;
 
         let mut key = None;
         let mut passphrase = None;

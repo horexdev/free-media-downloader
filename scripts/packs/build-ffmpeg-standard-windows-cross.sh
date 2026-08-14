@@ -77,7 +77,6 @@ if command -v "$cross_prefix-gcc" >/dev/null; then
   ar="$cross_prefix-ar"
   ranlib="$cross_prefix-ranlib"
   nm="$cross_prefix-nm"
-  objdump="$cross_prefix-objdump"
   strip_tool="$cross_prefix-strip"
   strings_tool="$cross_prefix-strings"
 elif command -v "$cross_prefix-clang" >/dev/null; then
@@ -87,7 +86,6 @@ elif command -v "$cross_prefix-clang" >/dev/null; then
   ar="llvm-ar"
   ranlib="llvm-ranlib"
   nm="llvm-nm"
-  objdump="llvm-objdump"
   strip_tool="llvm-strip"
   strings_tool="llvm-strings"
 else
@@ -96,7 +94,7 @@ else
 fi
 
 required_tools=(
-  "$cc" "$cxx" "$assembler" "$ar" "$ranlib" "$nm" "$objdump" "$strip_tool"
+  "$cc" "$cxx" "$assembler" "$ar" "$ranlib" "$nm" "$strip_tool"
   "$strings_tool" make pkg-config
 )
 for tool in "${required_tools[@]}"; do
@@ -190,11 +188,44 @@ cp "$work_dir/ffmpeg-prefix/bin/ffprobe.exe" "$output_dir/ffprobe.exe"
 "$strip_tool" "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe"
 chmod 755 "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe"
 
+verify_pe_machine() {
+  local binary=$1
+  local expected_machine=$2
+  node - "$binary" "$expected_machine" <<'NODE'
+const { readFileSync } = require("node:fs");
+
+const [binary, expectedText] = process.argv.slice(2);
+const contents = readFileSync(binary);
+if (contents.length < 0x40 || contents.toString("ascii", 0, 2) !== "MZ") {
+  throw new Error(`${binary} is not a DOS/PE executable`);
+}
+const peOffset = contents.readUInt32LE(0x3c);
+if (peOffset + 26 > contents.length || contents.toString("binary", peOffset, peOffset + 4) !== "PE\0\0") {
+  throw new Error(`${binary} has an invalid PE signature`);
+}
+const machine = contents.readUInt16LE(peOffset + 4);
+const expected = Number(expectedText);
+if (machine !== expected) {
+  throw new Error(`${binary} has PE machine 0x${machine.toString(16)}, expected 0x${expected.toString(16)}`);
+}
+const characteristics = contents.readUInt16LE(peOffset + 22);
+if ((characteristics & 0x0002) === 0) {
+  throw new Error(`${binary} is not marked executable`);
+}
+const optionalMagic = contents.readUInt16LE(peOffset + 24);
+if (optionalMagic !== 0x20b) {
+  throw new Error(`${binary} is not a PE32+ executable`);
+}
+NODE
+}
+
 if [[ "$target" == windows-x64 ]]; then
-  "$objdump" -f "$output_dir/ffmpeg.exe" | grep -Eq 'i386:x86-64|pei-x86-64'
+  expected_machine=0x8664
 else
-  "$objdump" -f "$output_dir/ffmpeg.exe" | grep -Eq 'aarch64|arm64|coff-arm64'
+  expected_machine=0xaa64
 fi
+verify_pe_machine "$output_dir/ffmpeg.exe" "$expected_machine"
+verify_pe_machine "$output_dir/ffprobe.exe" "$expected_machine"
 "$strings_tool" "$output_dir/ffmpeg.exe" | grep -F "ffmpeg version ${source_version}-fmd.1"
 "$strings_tool" "$output_dir/ffprobe.exe" | grep -F "ffprobe version ${source_version}-fmd.1"
 "$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-gpl'

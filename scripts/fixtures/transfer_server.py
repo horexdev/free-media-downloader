@@ -203,8 +203,8 @@ def main() -> int:
     https.socket = tls.wrap_socket(https.socket, server_side=True)
     threading.Thread(target=https.serve_forever, daemon=True).start()
 
-    host_key = paramiko.RSAKey.generate(2048)
-    client_key = paramiko.RSAKey.generate(2048)
+    host_key = paramiko.ECDSAKey.generate()
+    client_key = paramiko.ECDSAKey.generate()
     client_key_path = root / "fixture-client-key.pem"
     client_key.write_private_key_file(str(client_key_path), password=KEY_PASSPHRASE)
 
