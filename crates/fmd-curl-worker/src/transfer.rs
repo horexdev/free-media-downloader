@@ -438,14 +438,8 @@ mod native_sftp {
         let Some(algorithm) = algorithm_name(key_type) else {
             return 0;
         };
-        let encoded = unsafe { std::slice::from_raw_parts(key, key_len) };
-        let Ok(encoded) = std::str::from_utf8(encoded) else {
-            return 0;
-        };
-        let Ok(raw) = STANDARD.decode(encoded.trim_end_matches('\0')) else {
-            return 0;
-        };
-        let fingerprint = format!("SHA256:{}", STANDARD.encode(Sha256::digest(&raw)));
+        let raw = unsafe { std::slice::from_raw_parts(key, key_len) };
+        let fingerprint = format!("SHA256:{}", STANDARD.encode(Sha256::digest(raw)));
         let observed = ObservedHostKey {
             algorithm: algorithm.into(),
             raw_key_base64: STANDARD.encode(raw),

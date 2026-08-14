@@ -12,10 +12,11 @@ ffmpeg_archive=$2
 work_dir=$3
 output_dir=$4
 recipe_path="$(cd "$(dirname "$0")/../.." && pwd -P)/packs/recipes/ffmpeg-standard.json"
-recipe_version="$(node -e 'const recipe=require(process.argv[1]); console.log(recipe.version);' "$recipe_path")"
+source_lock_path="$(cd "$(dirname "$0")/../.." && pwd -P)/packs/source-lock.json"
+source_version="$(node -e 'const lock=require(process.argv[1]); console.log(lock.components.ffmpeg.version);' "$source_lock_path")"
 recipe_source_date_epoch="$(node -e 'const recipe=require(process.argv[1]); console.log(recipe.sourceDateEpoch ?? 0);' "$recipe_path")"
 
-if [[ -z "$recipe_version" || -z "$recipe_source_date_epoch" ]]; then
+if [[ -z "$source_version" || -z "$recipe_source_date_epoch" ]]; then
   echo "unable to resolve ffmpeg recipe metadata" >&2
   exit 1
 fi
@@ -194,7 +195,7 @@ if [[ "$target" == windows-x64 ]]; then
 else
   "$objdump" -f "$output_dir/ffmpeg.exe" | grep -Eq 'aarch64|arm64|coff-arm64'
 fi
-"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F "ffmpeg version ${recipe_version}-fmd.1"
-"$strings_tool" "$output_dir/ffprobe.exe" | grep -F "ffprobe version ${recipe_version}-fmd.1"
+"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F "ffmpeg version ${source_version}-fmd.1"
+"$strings_tool" "$output_dir/ffprobe.exe" | grep -F "ffprobe version ${source_version}-fmd.1"
 "$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-gpl'
 "$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-nonfree'

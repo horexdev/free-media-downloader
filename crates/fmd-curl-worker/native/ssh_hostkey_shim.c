@@ -8,6 +8,9 @@ FMD_STATIC_ASSERT(fmd_public_key_auth_mask_is_stable,
 FMD_STATIC_ASSERT(fmd_password_auth_mask_is_stable,
                   CURLSSH_AUTH_PASSWORD == (1L << 1));
 FMD_STATIC_ASSERT(fmd_no_auth_mask_is_stable, CURLSSH_AUTH_NONE == 0L);
+FMD_STATIC_ASSERT(fmd_rsa_hostkey_type_is_stable, CURLKHTYPE_RSA == 2);
+FMD_STATIC_ASSERT(fmd_ecdsa_hostkey_type_is_stable, CURLKHTYPE_ECDSA == 4);
+FMD_STATIC_ASSERT(fmd_ed25519_hostkey_type_is_stable, CURLKHTYPE_ED25519 == 5);
 
 typedef int (*fmd_hostkey_callback)(void *context, int key_type,
                                     const unsigned char *key, size_t key_len);
@@ -16,16 +19,12 @@ typedef struct {
   void *context;
 } fmd_hostkey_state;
 
-static CURLHcode fmd_curl_hostkey_bridge(void *clientp, int keymatch,
-                                         const struct curl_khkey *match,
-                                         const struct curl_khkey *foundkey) {
-  (void)keymatch;
-  (void)match;
+static int fmd_curl_hostkey_bridge(void *clientp, int key_type,
+                                   const char *key, size_t key_len) {
   fmd_hostkey_state *state = (fmd_hostkey_state *)clientp;
-  int decision = state->callback(state->context, (int)foundkey->keytype,
-                          (const unsigned char *)foundkey->key,
-                          foundkey->len);
-  return (CURLHcode)(decision == 1 ? CURLKHSTAT_FINE : CURLKHSTAT_REJECT);
+  int decision = state->callback(state->context, key_type,
+                                 (const unsigned char *)key, key_len);
+  return decision == 1 ? CURLE_OK : CURLE_PEER_FAILED_VERIFICATION;
 }
 
 CURLcode fmd_curl_set_hostkey_callback(CURL *easy, fmd_hostkey_state *state) {
