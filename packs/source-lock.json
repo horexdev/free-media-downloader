@@ -196,6 +196,7 @@
       "source": "https://github.com/libssh2/libssh2.git",
       "tag": "libssh2-1.11.1",
       "baseCommit": "a312b43325e3383c865a87bb1d26cb52e3292641",
+      "commit": "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8",
       "binaryLicense": "BSD-3-Clause",
       "signatureRequired": false,
       "requiredSecurityCommits": [
@@ -203,8 +204,8 @@
         "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8"
       ],
       "sourceDistribution": {
-        "url": "https://github.com/libssh2/libssh2/archive/refs/tags/libssh2-1.11.1.tar.gz",
-        "sha256": "82b35c61c78b475647bdc981a183c5b5ab0d979e1caee94186e8f9150f2b0d0d"
+        "url": "https://github.com/libssh2/libssh2/archive/97acf3dfda80c91c3a8c9f2372546301d4a1a7a8.tar.gz",
+        "sha256": "20ad71fb56e44e799556008ccd1ad1d43a02c1c48f038affc868939ef34ef718"
       },
       "license": {
         "spdx": "BSD-3-Clause",

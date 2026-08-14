@@ -406,52 +406,10 @@ jobs:
       - name: Prepare curl static prefix (Windows only)
         if: startsWith(matrix.target, 'windows-')
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $normalizedTarget = "${{ matrix.target }}".Trim().ToLowerInvariant()
-          switch ($normalizedTarget) {
-            "windows-x64" {
-              $url = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64-mingw.zip"
-            }
-            "windows-arm64" {
-              $url = "https://curl.se/windows/dl-8.21.0_6/curl-8.21.0_6-win64a-mingw.zip"
-            }
-            default {
-              throw "Unsupported curl prefix target: $normalizedTarget"
-            }
-          }
-          if (-not $url) {
-            throw "Curl prefix URL is empty for target: $normalizedTarget"
-          }
-          $archive = Join-Path "${{ runner.temp }}" "curl-static.zip"
-          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
-          $extract = Join-Path "${{ runner.temp }}" "curl-static-prefix"
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $extract
-          Expand-Archive -Path $archive -DestinationPath $extract -Force
-          $prefix = Get-ChildItem -Path $extract -Directory -ErrorAction Stop |
-              Where-Object {
-              (Test-Path (Join-Path $_.FullName "include/curl/curl.h")) -and
-              (Test-Path (Join-Path $_.FullName "lib/libcurl.a"))
-            } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $prefix) {
-            $prefix = Get-ChildItem -Path $extract -Recurse -Directory -Depth 3 -ErrorAction Stop |
-            Where-Object {
-                (Test-Path (Join-Path $_.FullName "include/curl/curl.h")) -and
-                (Test-Path (Join-Path $_.FullName "lib/libcurl.a"))
-              } |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
-          if (-not $prefix) {
-            $topLevel = (Get-ChildItem -Path $extract -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName) -join ", "
-            throw "curl static prefix is missing required headers/libs after extraction from: $archive. directories: $topLevel"
-          }
-          if (-not (Test-Path (Join-Path $prefix "include/curl/curl.h")) -or
-              -not (Test-Path (Join-Path $prefix "lib/libcurl.a")) ) {
-            throw "curl static prefix is missing required headers/libs in $prefix"
-          }
-          echo "FMD_CURL_STATIC_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "curl static prefix: $prefix"
+        run: >-
+          ./scripts/packs/build-curl-static-prefix-windows.ps1
+          -Target "${{ matrix.target }}"
+          -WorkDir "${{ runner.temp }}/curl-static-prefix"
       - name: Prepare curl static prefix (Unix)
         if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
         shell: bash
@@ -494,26 +452,43 @@ jobs:
           echo "ARIA2_PATH=$aria2" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build packager and curl worker (Windows)
         if: startsWith(matrix.target, 'windows-')
-        run: cargo build --locked --release -p fmd-packager -p fmd-curl-worker --features native-stack
+        run: >-
+          cargo build --locked --release
+          -p fmd-packager -p fmd-curl-worker
+          --no-default-features --features native-stack
       - name: Build packager and curl worker (Linux/macOS)
         if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
         env:
           FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
-        run: cargo build --locked --release -p fmd-packager -p fmd-curl-worker --features native-stack
+          PKG_CONFIG_PATH: "${{ runner.temp }}/curl-static-prefix/prefix/lib/pkgconfig"
+          PKG_CONFIG_ALL_STATIC: "1"
+        run: >-
+          cargo build --locked --release
+          -p fmd-packager -p fmd-curl-worker
+          --no-default-features --features native-stack
       - name: Build fixture-enabled curl worker (Windows)
         if: startsWith(matrix.target, 'windows-')
         run: >-
           cargo build --locked --release -p fmd-curl-worker
+          --no-default-features
           --features native-stack,test-fixtures
           --target-dir "${{ runner.temp }}/curl-worker-fixture-target"
       - name: Build fixture-enabled curl worker (Linux/macOS)
         if: startsWith(matrix.target, 'linux-') || startsWith(matrix.target, 'macos-')
         env:
           FMD_CURL_STATIC_PREFIX: "${{ runner.temp }}/curl-static-prefix/prefix"
+          PKG_CONFIG_PATH: "${{ runner.temp }}/curl-static-prefix/prefix/lib/pkgconfig"
+          PKG_CONFIG_ALL_STATIC: "1"
         run: >-
           cargo build --locked --release -p fmd-curl-worker
+          --no-default-features
           --features native-stack,test-fixtures
           --target-dir "${{ runner.temp }}/curl-worker-fixture-target"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: startsWith(matrix.target, 'windows-')
+        with:
+          python-version: '3.12'
+          architecture: x64
       - name: Install transfer fixture dependencies
         run: python -m pip install --disable-pip-version-check "paramiko==5.0.0"
       - name: Test native HTTPS and SFTP transfers

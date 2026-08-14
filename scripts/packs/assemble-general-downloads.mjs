@@ -138,7 +138,7 @@ const components = componentNames.map((name) => {
     name,
     version: component.version,
     source_url: source.url,
-    source_revision: component.baseCommit ?? component.commit ?? component.version,
+    source_revision: component.commit ?? component.baseCommit ?? component.version,
     source_sha256: source.sha256,
     license_id: component.binaryLicense,
     original_sha256: source.sha256,

@@ -118,7 +118,6 @@ else
   unset PKG_CONFIG
 fi
 export CFLAGS="-O2 -fstack-protector-strong -D_WIN32_WINNT=0x0A00"
-export LDFLAGS="-s"
 
 recipe_configuration=()
 while IFS= read -r option; do
@@ -134,13 +133,12 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
 
 (
   cd "$work_dir/ffmpeg-build"
-  "$work_dir/ffmpeg-source/configure" \
+  if ! "$work_dir/ffmpeg-source/configure" \
     --prefix="$work_dir/ffmpeg-prefix" \
     --cross-prefix="${cross_prefix}-" \
     --target-os=mingw64 \
     --arch="$recipe_arch" \
     --extra-version=fmd.1 \
-    --cpu="$recipe_arch" \
     --enable-cross-compile \
     --cc="$cc" \
     --cxx="$cxx" \
@@ -153,8 +151,10 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
     --pkg-config-flags="--static" \
     --enable-schannel \
     "${recipe_configuration[@]}" \
-    --extra-cflags="$CFLAGS" \
-    --extra-ldflags="$LDFLAGS"
+    --extra-cflags="$CFLAGS"; then
+    cat ffbuild/config.log >&2
+    exit 1
+  fi
 
   grep -Eq '^#define CONFIG_OPENSSL 0$' config.h
   grep -Eq '^#define CONFIG_SCHANNEL 1$' config.h
@@ -168,6 +168,7 @@ mkdir "$work_dir/ffmpeg-build" "$work_dir/ffmpeg-prefix"
 
 cp "$work_dir/ffmpeg-prefix/bin/ffmpeg.exe" "$output_dir/ffmpeg.exe"
 cp "$work_dir/ffmpeg-prefix/bin/ffprobe.exe" "$output_dir/ffprobe.exe"
+"$strip_tool" "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe"
 chmod 755 "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe"
 
 if [[ "$target" == windows-x64 ]]; then

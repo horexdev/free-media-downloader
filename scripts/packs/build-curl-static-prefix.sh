@@ -250,6 +250,10 @@ build_curl() {
       -DCURL_ZLIB=ON \
       -DZLIB_INCLUDE_DIR="$prefix_dir/include" \
       -DZLIB_LIBRARY="$prefix_dir/lib/libz.a" \
+      -DCURL_BROTLI=OFF \
+      -DCURL_ZSTD=OFF \
+      -DUSE_LIBIDN2=OFF \
+      -DCURL_USE_LIBPSL=OFF \
       -DUSE_NGHTTP2=ON \
       -DNGHTTP2_USE_STATIC_LIBS=ON \
       -DNGHTTP2_INCLUDE_DIR="$prefix_dir/include" \

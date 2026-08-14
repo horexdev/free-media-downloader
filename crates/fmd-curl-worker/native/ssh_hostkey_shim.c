@@ -25,7 +25,7 @@ static CURLHcode fmd_curl_hostkey_bridge(void *clientp, int keymatch,
   int decision = state->callback(state->context, (int)foundkey->keytype,
                           (const unsigned char *)foundkey->key,
                           foundkey->len);
-  return decision == 1 ? CURLKHSTAT_FINE : CURLKHSTAT_REJECT;
+  return (CURLHcode)(decision == 1 ? CURLKHSTAT_FINE : CURLKHSTAT_REJECT);
 }
 
 CURLcode fmd_curl_set_hostkey_callback(CURL *easy, fmd_hostkey_state *state) {
