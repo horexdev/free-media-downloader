@@ -21,7 +21,7 @@ from pathlib import Path
 import paramiko
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 
@@ -32,9 +32,13 @@ KEY_PASSPHRASE = "fixture-passphrase"
 STOP = threading.Event()
 
 
-def write_tls_material(root: Path) -> tuple[Path, Path]:
+def report_startup(stage: str) -> None:
+    print(f"fixture startup: {stage}", file=sys.stderr, flush=True)
+
+
+def write_tls_material(root: Path) -> tuple[Path, Path, Path]:
     now = datetime.datetime.now(datetime.timezone.utc)
-    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "FMD fixture CA")])
     ca_cert = (
         x509.CertificateBuilder()
@@ -62,7 +66,7 @@ def write_tls_material(root: Path) -> tuple[Path, Path]:
         .sign(ca_key, hashes.SHA256())
     )
 
-    server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    server_key = ec.generate_private_key(ec.SECP256R1())
     server_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     server_cert = (
         x509.CertificateBuilder()
@@ -194,8 +198,10 @@ def serve_sftp(listener: socket.socket, host_key: paramiko.PKey, client_key: par
 
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="fmd-transfer-fixture-"))
+    report_startup("generating TLS material")
     ca_path, cert_path, tls_key_path = write_tls_material(root)
 
+    report_startup("starting HTTPS server")
     https = ThreadingHTTPServer(("127.0.0.1", 0), HttpsHandler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -203,11 +209,13 @@ def main() -> int:
     https.socket = tls.wrap_socket(https.socket, server_side=True)
     threading.Thread(target=https.serve_forever, daemon=True).start()
 
+    report_startup("generating SFTP keys")
     host_key = paramiko.ECDSAKey.generate()
     client_key = paramiko.ECDSAKey.generate()
     client_key_path = root / "fixture-client-key.pem"
     client_key.write_private_key_file(str(client_key_path), password=KEY_PASSPHRASE)
 
+    report_startup("starting SFTP server")
     sftp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sftp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sftp.bind(("127.0.0.1", 0))
@@ -219,6 +227,7 @@ def main() -> int:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
+    report_startup("ready")
     print(
         json.dumps(
             {
