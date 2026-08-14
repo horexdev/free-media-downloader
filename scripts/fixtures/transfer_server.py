@@ -17,6 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 import paramiko
 from cryptography import x509
@@ -128,6 +129,12 @@ class TlsThreadingHTTPServer(ThreadingHTTPServer):
     ) -> None:
         self.tls_context = context
         super().__init__(server_address, request_handler)
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
     def get_request(self) -> tuple[ssl.SSLSocket, tuple[str, int]]:
         connection, address = super().get_request()
