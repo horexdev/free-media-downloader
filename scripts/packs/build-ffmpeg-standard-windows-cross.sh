@@ -226,7 +226,21 @@ else
 fi
 verify_pe_machine "$output_dir/ffmpeg.exe" "$expected_machine"
 verify_pe_machine "$output_dir/ffprobe.exe" "$expected_machine"
-"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F "ffmpeg version ${source_version}-fmd.1"
-"$strings_tool" "$output_dir/ffprobe.exe" | grep -F "ffprobe version ${source_version}-fmd.1"
-"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-gpl'
-"$strings_tool" "$output_dir/ffmpeg.exe" | grep -F -- '--disable-nonfree'
+
+verify_binary_string() {
+  local strings_file=$1
+  local expected=$2
+  if ! grep -Fq -- "$expected" "$strings_file"; then
+    echo "expected string not found in cross-compiled binary: $expected" >&2
+    exit 1
+  fi
+}
+
+ffmpeg_strings="$work_dir/ffmpeg.strings"
+ffprobe_strings="$work_dir/ffprobe.strings"
+"$strings_tool" "$output_dir/ffmpeg.exe" > "$ffmpeg_strings"
+"$strings_tool" "$output_dir/ffprobe.exe" > "$ffprobe_strings"
+verify_binary_string "$ffmpeg_strings" "${source_version}-fmd.1"
+verify_binary_string "$ffprobe_strings" "${source_version}-fmd.1"
+verify_binary_string "$ffmpeg_strings" '--disable-gpl'
+verify_binary_string "$ffmpeg_strings" '--disable-nonfree'
