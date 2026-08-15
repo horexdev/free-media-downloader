@@ -78,6 +78,8 @@ jobs:
           libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgdk-pixbuf2.0-dev
       - run: pnpm install --frozen-lockfile
       - run: pnpm tauri build --config src-tauri/tauri.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - run: node scripts/package-core-artifacts.mjs --target "${{ matrix.id }}" --workspace "${{ github.workspace }}" --out "${{ runner.temp }}/core-artifacts"
       - name: Smoke portable and installed distributions
         run: node scripts/smoke-core-artifacts.mjs --target "${{ matrix.id }}" --artifacts "${{ runner.temp }}/core-artifacts"
