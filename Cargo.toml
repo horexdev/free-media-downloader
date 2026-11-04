@@ -50,7 +50,7 @@ tar = "0.4.44"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
 zeroize = { version = "1.8.2", features = ["derive"] }
-zip = { version = "7.2.0", default-features = false, features = ["deflate", "deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate", "deflate-flate2-zlib-rs"] }
 
 [profile.release]
 codegen-units = 1
